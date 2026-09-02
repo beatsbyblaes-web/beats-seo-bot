@@ -226,14 +226,25 @@ async def process_seo(message: types.Message, state: FSMContext):
     u = get_user(user_id)
     await message.answer(TEXTS[u["lang"]]["generating"])
 
-    response = await client.chat.completions.create(
-        model="deepseek/deepseek-r1:free",
-        messages=[{"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}]
-    )
-    
-    increment_limit(user_id, "seo")  # Списываем 1 попытку
-    await state.clear()
-    await message.answer(response.choices[0].message.content)
+    try:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(
+                model="deepseek/deepseek-chat:free",  # Стабильная бесплатная модель
+                messages=[{"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}]
+            ),
+            timeout=30.0  # Таймаут 30 секунд
+        )
+        
+        increment_limit(user_id, "seo")  # Списываем 1 попытку только при успешном ответе
+        await state.clear()
+        await message.answer(response.choices[0].message.content)
+
+    except asyncio.TimeoutError:
+        await state.clear()
+        await message.answer("⚠️ Сервер нейросети перегружен и не ответил за 30 секунд. Попробуй ещё раз чуть позже!")
+    except Exception as e:
+        await state.clear()
+        await message.answer(f"⚠️ Ошибка при запросе к AI: {str(e)}")
 
 # --- ВЕБ-СЕРВЕР ДЛЯ RENDER (ПОРТ & KEEP-ALIVE) ---
 async def handle(request):
