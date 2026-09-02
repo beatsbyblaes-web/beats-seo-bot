@@ -1,410 +1,256 @@
-import asyncio
-import logging
 import os
+import sqlite3
+import logging
+import asyncio
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from aiohttp import web
+from openai import AsyncOpenAI
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-import aiohttp
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-from openai import AsyncOpenAI
 
-# Загружаем переменные окружения
+# Загрузка переменных
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Инициализируем AI-клиент (DeepSeek через OpenRouter)
-ai_client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_KEY,
-)
+# Данные каналов
+TG_CHANNEL_USERNAME = "beatsbyblaes"  
+YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- СЛОВАРЬ ПЕРЕВОДОВ ---
-MESSAGES = {
-    "ru": {
-        "welcome": (
-            "Привет, {name}! 👋\n\n"
-            "Я AI-помощник для битмейкеров. Помогу составить SEO или разобрать конкурентов.\n"
-            "Выбери нужное действие:"
-        ),
-        "btn_gen_seo": "🚀 Сгенерировать SEO",
-        "btn_parse_yt": "🔍 Разобрать конкурента",
-        "btn_lang": "🌐 Язык / Language",
-        "btn_cancel": "❌ Отмена",
-        "btn_back": "⬅️ Назад",
-        "select_lang": "Выберите язык интерфейса / Select interface language:",
+client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
+
+# --- БАЗА ДАННЫХ (SQLite) ---
+def init_db():
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            lang TEXT DEFAULT 'RU',
+            seo_used INTEGER DEFAULT 0,
+            parser_used INTEGER DEFAULT 0,
+            is_subscribed INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_user(user_id):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT lang, seo_used, parser_used, is_subscribed FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        row = ('RU', 0, 0, 0)
+    conn.close()
+    return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "is_subscribed": row[3]}
+
+def update_user_lang(user_id, lang):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang, user_id))
+    conn.commit()
+    conn.close()
+
+def increment_limit(user_id, limit_type):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    if limit_type == "seo":
+        cursor.execute("UPDATE users SET seo_used = seo_used + 1 WHERE user_id = ?", (user_id,))
+    elif limit_type == "parser":
+        cursor.execute("UPDATE users SET parser_used = parser_used + 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# --- СЛОВАРЬ ЛОКАЛИЗАЦИИ ---
+TEXTS = {
+    "RU": {
+        "welcome": "👋 Привет! Я AI-помощник для битмейкеров.\n\nВыбери нужную функцию:",
+        "gen_seo": "🚀 Сгенерировать SEO",
+        "parse_competitor": "🔍 Разобрать конкурента",
+        "change_lang": "🌐 Язык / Language",
+        "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
-        "cancelled": "❌ Действие отменено. Выбери нужное действие:",
-        "seo_step1": "🎤 **Шаг 1/3:** Введи имя артиста или стиль (например: `Drake x Travis Scott`):",
-        "seo_step2": "🥁 **Шаг 2/3:** Укажи жанр/вайб (например: `Dark Trap`, `Jersey Club`):",
-        "seo_step3": "🎹 **Шаг 3/3:** Укажи BPM и тональность (например: `140 BPM / C# Minor`):",
-        "seo_generating": "🤖 Нейросеть генерирует уникальный SEO-пакет...",
-        "seo_error": "❌ Ошибка генерации AI! Проверь ключ OpenRouter.\n\n`{error}`",
-        "parse_step1": "🔗 **Отправь ссылку на YouTube-видео** конкурента:",
-        "parse_invalid_url": "❌ Это не похоже на ссылку YouTube. Попробуй еще раз!",
-        "parse_parsing": "🔍 Парсю страницу видео и вытаскиваю скрытые теги...",
-        "parse_error": "❌ Не удалось разобрать видео. Ошибка: `{error}`",
-        "parse_no_tags": "У этого видео нет тегов (или они скрыты).",
-        "parse_result": (
-            "🎬 **Название видео:**\n*{title}*\n\n"
-            "🔑 **Реальные теги видео (готовы к копированию):**\n`{tags}`\n\n"
-            "📊 **Всего тегов:** {count} шт."
-        ),
+        "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
+        "ask_competitor_url": "🔗 Отправь ссылку на YouTube-видео конкурента:",
+        "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
+        "check_sub_btn": "✅ Проверить подписку",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию/разбор.\nДля продолжения работы оформите подписку.",
+        "buy_sub_btn": "⭐ Оформить подписку",
+        "generating": "🤖 Генерирую SEO через DeepSeek...",
+        "parsing": "🔍 Парсим теги с YouTube..."
     },
-    "en": {
-        "welcome": (
-            "Hello, {name}! 👋\n\n"
-            "I'm an AI assistant for beatmakers. I'll help you build SEO or analyze your competitors.\n"
-            "Choose an action:"
-        ),
-        "btn_gen_seo": "🚀 Generate SEO",
-        "btn_parse_yt": "🔍 Analyze Competitor",
-        "btn_lang": "🌐 Language / Язык",
-        "btn_cancel": "❌ Cancel",
-        "btn_back": "⬅️ Back",
-        "select_lang": "Select interface language / Выберите язык интерфейса:",
+    "EN": {
+        "welcome": "👋 Hi! I am an AI assistant for beatmakers.\n\nChoose an option:",
+        "gen_seo": "🚀 Generate SEO",
+        "parse_competitor": "🔍 Analyze Competitor",
+        "change_lang": "🌐 Language / Язык",
+        "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
-        "cancelled": "❌ Action cancelled. Choose an action:",
-        "seo_step1": "🎤 **Step 1/3:** Enter artist name or type style (e.g., `Drake x Travis Scott`):",
-        "seo_step2": "🥁 **Step 2/3:** Specify genre/vibe (e.g., `Dark Trap`, `Jersey Club`):",
-        "seo_step3": "🎹 **Step 3/3:** Specify BPM & Key (e.g., `140 BPM / C# Minor`):",
-        "seo_generating": "🤖 AI is generating a unique SEO package...",
-        "seo_error": "❌ AI generation error! Check OpenRouter key.\n\n`{error}`",
-        "parse_step1": "🔗 **Send a YouTube video link** of your competitor:",
-        "parse_invalid_url": "❌ This doesn't look like a valid YouTube link. Try again!",
-        "parse_parsing": "🔍 Parsing video page and extracting hidden tags...",
-        "parse_error": "❌ Failed to parse video. Error: `{error}`",
-        "parse_no_tags": "This video has no tags (or they are hidden).",
-        "parse_result": (
-            "🎬 **Video Title:**\n*{title}*\n\n"
-            "🔑 **Actual Video Tags (Ready to copy):**\n`{tags}`\n\n"
-            "📊 **Total Tags:** {count} pcs."
-        ),
-    },
+        "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
+        "ask_competitor_url": "🔗 Send a link to the competitor's YouTube video:",
+        "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
+        "check_sub_btn": "✅ Check Subscription",
+        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your 1 free generation/analysis.\nPlease subscribe to get unlimited access.",
+        "buy_sub_btn": "⭐ Subscribe Now",
+        "generating": "🤖 Generating SEO via DeepSeek...",
+        "parsing": "🔍 Parsing tags from YouTube..."
+    }
 }
 
+class BotStates(StatesGroup):
+    waiting_for_seo_input = State()
+    waiting_for_competitor_url = State()
 
-# --- СОСТОЯНИЯ (FSM) ---
-class SEOForm(StatesGroup):
-    artist = State()
-    genre = State()
-    bpm_key = State()
+def get_main_keyboard(lang):
+    kb = [
+        [types.KeyboardButton(text=TEXTS[lang]["gen_seo"])],
+        [types.KeyboardButton(text=TEXTS[lang]["parse_competitor"])],
+        [types.KeyboardButton(text=TEXTS[lang]["change_lang"])]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-
-class CompetitorForm(StatesGroup):
-    yt_link = State()
-
-
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
-async def get_user_lang(state: FSMContext) -> str:
-    data = await state.get_data()
-    return data.get("lang", "ru")
-
-
-# --- КЛАВИАТУРЫ ---
-def get_main_keyboard(lang: str = "ru"):
-    m = MESSAGES[lang]
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=m["btn_gen_seo"], callback_data="gen_seo")],
-            [InlineKeyboardButton(text=m["btn_parse_yt"], callback_data="parse_yt")],
-            [InlineKeyboardButton(text=m["btn_lang"], callback_data="select_lang")],
-        ]
-    )
-
-
-def get_cancel_keyboard(lang: str = "ru"):
-    m = MESSAGES[lang]
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=m["btn_cancel"], callback_data="cancel")]
-        ]
-    )
-
-
-def get_nav_keyboard(back_step: str, lang: str = "ru"):
-    m = MESSAGES[lang]
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=m["btn_back"], callback_data=f"back_{back_step}"),
-                InlineKeyboardButton(text=m["btn_cancel"], callback_data="cancel"),
-            ]
-        ]
-    )
-
-
-def get_lang_keyboard():
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru"),
-                InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_en"),
-            ],
-            [InlineKeyboardButton(text="❌ Cancel / Отмена", callback_data="cancel")],
-        ]
-    )
-
-
-# --- ФУНКЦИЯ ПАРСИНГА YOUTUBE ---
-async def fetch_youtube_tags(url: str):
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+# --- ПРОВЕРКА ПОДПИСКИ В TELEGRAM ---
+async def is_subscribed_to_tg(user_id):
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=10) as resp:
-                if resp.status != 200:
-                    return None, "HTTP Status Error"
-                html = await resp.text()
+        member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
+        return member.status in ["member", "administrator", "creator"]
+    except Exception:
+        return False
 
-        soup = BeautifulSoup(html, "html.parser")
-        tags = [
-            meta["content"]
-            for meta in soup.find_all("meta", property="og:video:tag")
-            if meta.get("content")
-        ]
-        title_meta = soup.find("meta", property="og:title")
-        title = title_meta["content"] if title_meta else "Title Not Found"
-        return {"title": title, "tags": tags}, None
-    except Exception as e:
-        return None, str(e)
+# --- ХЭНДЛЕРЫ ---
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    u = get_user(message.from_user.id)
+    await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
 
-
-# --- ВЫБОР И СМЕНА ЯЗЫКА ---
-@dp.callback_query(F.data == "select_lang")
-async def show_lang_selection(callback: types.CallbackQuery, state: FSMContext):
-    lang = await get_user_lang(state)
-    await callback.message.answer(
-        MESSAGES[lang]["select_lang"],
-        reply_markup=get_lang_keyboard(),
-    )
-    await callback.answer()
-
+@dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
+async def lang_menu(message: types.Message):
+    u = get_user(message.from_user.id)
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_RU"),
+         InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_EN")]
+    ])
+    await message.answer(TEXTS[u["lang"]]["select_lang"], reply_markup=inline_kb)
 
 @dp.callback_query(F.data.startswith("set_lang_"))
-async def set_language(callback: types.CallbackQuery, state: FSMContext):
-    new_lang = callback.data.split("_")[-1]
-    await state.update_data(lang=new_lang)
+async def set_language(callback: types.CallbackQuery):
+    lang = callback.data.split("_")[2]
+    update_user_lang(callback.from_user.id, lang)
+    await callback.message.delete()
+    await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
 
-    await callback.message.answer(
-        MESSAGES[new_lang]["lang_changed"],
-        reply_markup=get_main_keyboard(new_lang),
-    )
-    await callback.answer()
+@dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
+async def start_seo(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    u = get_user(user_id)
+    lang = u["lang"]
 
-
-# --- ОБРАБОТКА КОМАНД И НАВИГАЦИИ ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.set_data({"lang": lang})  # Сохраняем языковой контекст
-    await message.answer(
-        MESSAGES[lang]["welcome"].format(name=message.from_user.first_name),
-        reply_markup=get_main_keyboard(lang),
-    )
-
-
-@dp.callback_query(F.data == "cancel")
-async def cancel_handler(callback: types.CallbackQuery, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.set_data({"lang": lang})
-    await callback.message.answer(
-        MESSAGES[lang]["cancelled"],
-        reply_markup=get_main_keyboard(lang),
-    )
-    await callback.answer()
-
-
-# --- СЦЕНАРИЙ 1: ГЕНЕРАЦИЯ SEO (ЧЕРЕЗ DEEPSEEK AI) ---
-@dp.callback_query(F.data == "gen_seo")
-async def start_seo_gen(callback: types.CallbackQuery, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.set_state(SEOForm.artist)
-    await callback.message.answer(
-        MESSAGES[lang]["seo_step1"],
-        parse_mode="Markdown",
-        reply_markup=get_cancel_keyboard(lang),
-    )
-    await callback.answer()
-
-
-@dp.callback_query(F.data == "back_artist")
-async def back_to_artist(callback: types.CallbackQuery, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.set_state(SEOForm.artist)
-    await callback.message.answer(
-        MESSAGES[lang]["seo_step1"],
-        parse_mode="Markdown",
-        reply_markup=get_cancel_keyboard(lang),
-    )
-    await callback.answer()
-
-
-@dp.message(SEOForm.artist)
-async def process_artist(message: types.Message, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.update_data(artist=message.text)
-    await state.set_state(SEOForm.genre)
-    await message.answer(
-        MESSAGES[lang]["seo_step2"],
-        parse_mode="Markdown",
-        reply_markup=get_nav_keyboard("artist", lang),
-    )
-
-
-@dp.callback_query(F.data == "back_genre")
-async def back_to_genre(callback: types.CallbackQuery, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.set_state(SEOForm.genre)
-    await callback.message.answer(
-        MESSAGES[lang]["seo_step2"],
-        parse_mode="Markdown",
-        reply_markup=get_nav_keyboard("artist", lang),
-    )
-    await callback.answer()
-
-
-@dp.message(SEOForm.genre)
-async def process_genre(message: types.Message, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.update_data(genre=message.text)
-    await state.set_state(SEOForm.bpm_key)
-    await message.answer(
-        MESSAGES[lang]["seo_step3"],
-        parse_mode="Markdown",
-        reply_markup=get_nav_keyboard("genre", lang),
-    )
-
-
-@dp.message(SEOForm.bpm_key)
-async def process_bpm_key(message: types.Message, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.update_data(bpm_key=message.text)
-    user_data = await state.get_data()
-    
-    # Сбрасываем шаги, но сохраняем выбранный язык
-    await state.set_state(None)
-    await state.set_data({"lang": lang})
-
-    wait_msg = await message.answer(MESSAGES[lang]["seo_generating"])
-
-    target_lang_str = "Russian" if lang == "ru" else "English"
-
-    prompt = f"""
-    You are a professional YouTube SEO specialist for beatmakers.
-    Generate a complete SEO package for a Type Beat video.
-    Language of response: {target_lang_str}.
-
-    Input Data:
-    - Artist/Style: {user_data['artist']}
-    - Genre: {user_data['genre']}
-    - BPM/Key: {user_data['bpm_key']}
-
-    STRICT RULES:
-    1. Always use the CURRENT year 2026 in all titles, tags, and description! Do NOT use past years (2023, 2024, 2025).
-
-    OUTPUT FORMAT STRICTLY IN {target_lang_str}:
-
-    📌 **TITLE:**
-    (3 clickable title options with the year 2026)
-
-    🏷 **TAGS:**
-    (List of relevant tags separated by commas up to 400 characters including 2026, wrapped in monospace code block)
-
-    📝 **DESCRIPTION:**
-    (Description template with purchase link placeholder, timecodes, hashtags, and usage terms)
-    """
-
-    try:
-        response = await ai_client.chat.completions.create(
-            model="deepseek/deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-        )
-
-        seo_text = response.choices[0].message.content
-        await wait_msg.delete()
-        await message.answer(seo_text, parse_mode="Markdown")
-
-    except Exception as e:
-        await wait_msg.delete()
-        await message.answer(
-            MESSAGES[lang]["seo_error"].format(error=e),
-            parse_mode="Markdown",
-        )
-
-
-# --- СЦЕНАРИЙ 2: РАЗБОР КОНКУРЕНТА ---
-@dp.callback_query(F.data == "parse_yt")
-async def start_parse_yt(callback: types.CallbackQuery, state: FSMContext):
-    lang = await get_user_lang(state)
-    await state.set_state(CompetitorForm.yt_link)
-    await callback.message.answer(
-        MESSAGES[lang]["parse_step1"],
-        parse_mode="Markdown",
-        reply_markup=get_cancel_keyboard(lang),
-    )
-    await callback.answer()
-
-
-@dp.message(CompetitorForm.yt_link)
-async def process_yt_link(message: types.Message, state: FSMContext):
-    lang = await get_user_lang(state)
-    url = message.text.strip()
-    if not ("youtube.com" in url or "youtu.be" in url):
-        await message.answer(
-            MESSAGES[lang]["parse_invalid_url"],
-            reply_markup=get_cancel_keyboard(lang),
-        )
+    # 1. Проверка подписки
+    if not await is_subscribed_to_tg(user_id):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
+            [InlineKeyboardButton(text="▶️ YouTube Channel", url=YT_CHANNEL_URL)],
+            [InlineKeyboardButton(text=TEXTS[lang]["check_sub_btn"], callback_data="check_sub")]
+        ])
+        await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    await state.set_state(None)
-    await state.set_data({"lang": lang})
-
-    wait_msg = await message.answer(MESSAGES[lang]["parse_parsing"])
-
-    data, error = await fetch_youtube_tags(url)
-    await wait_msg.delete()
-
-    if error or not data:
-        await message.answer(
-            MESSAGES[lang]["parse_error"].format(error=error),
-            parse_mode="Markdown",
-        )
+    # 2. Проверка лимита (1 бесплатная генерация)
+    if u["seo_used"] >= 1:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
+        ])
+        await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    tags_str = (
-        ", ".join(data["tags"])
-        if data["tags"]
-        else MESSAGES[lang]["parse_no_tags"]
+    await state.set_state(BotStates.waiting_for_seo_input)
+    await message.answer(TEXTS[lang]["ask_seo_topic"])
+
+@dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
+async def start_parser(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    u = get_user(user_id)
+    lang = u["lang"]
+
+    if not await is_subscribed_to_tg(user_id):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
+            [InlineKeyboardButton(text="▶️ YouTube Channel", url=YT_CHANNEL_URL)],
+            [InlineKeyboardButton(text=TEXTS[lang]["check_sub_btn"], callback_data="check_sub")]
+        ])
+        await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if u["parser_used"] >= 1:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
+        ])
+        await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
+        return
+
+    await state.set_state(BotStates.waiting_for_competitor_url)
+    await message.answer(TEXTS[lang]["ask_competitor_url"])
+
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_callback(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    u = get_user(user_id)
+    if await is_subscribed_to_tg(user_id):
+        await callback.message.delete()
+        await callback.message.answer("🎉 Спасибо за подписку! Доступ открыт.", reply_markup=get_main_keyboard(u["lang"]))
+    else:
+        await callback.answer("❌ Подписка не найдена. Подпишитесь на канал!", show_alert=True)
+
+# --- ИСПОЛНЕНИЕ SEO ---
+@dp.message(BotStates.waiting_for_seo_input)
+async def process_seo(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    u = get_user(user_id)
+    await message.answer(TEXTS[u["lang"]]["generating"])
+
+    response = await client.chat.completions.create(
+        model="deepseek/deepseek-r1:free",
+        messages=[{"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}]
     )
     
-    result_text = MESSAGES[lang]["parse_result"].format(
-        title=data["title"],
-        tags=tags_str,
-        count=len(data["tags"]),
-    )
-    await message.answer(result_text, parse_mode="Markdown")
+    increment_limit(user_id, "seo")  # Списываем 1 попытку
+    await state.clear()
+    await message.answer(response.choices[0].message.content)
 
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (ПОРТ & KEEP-ALIVE) ---
+async def handle(request):
+    return web.Response(text="Bot is active!")
 
-# --- ЗАПУСК БОТА ---
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("🚀 Multilingual DeepSeek SEO Bot successfully launched!")
-    await dp.start_polling(bot)
+    app = web.Application()
+    app.router.add_get("/", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
 
+    print("🚀 Bot with Freemium system launched!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
