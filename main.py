@@ -226,7 +226,7 @@ async def process_seo(message: types.Message, state: FSMContext):
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model="meta-llama/llama-3.3-70b-instruct:free",
+                model="google/gemma-2-9b-it:free",
                 messages=[{"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}]
             ),
             timeout=30.0
