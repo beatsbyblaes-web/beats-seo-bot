@@ -221,13 +221,29 @@ async def check_sub_callback(callback: types.CallbackQuery):
 async def process_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
-    await message.answer(TEXTS[u["lang"]]["generating"])
+    lang = u["lang"]
+    await message.answer(TEXTS[lang]["generating"])
+
+    system_instruction = (
+        "Ты — узкоспециализированный SEO-генератор для YouTube битмейкеров. "
+        "Твоя задача — сгенерировать готовые Title (Заголовок), Description (Описание) и Tags (Теги) для видео с битом.\n\n"
+        "СТРОГИЕ ПРАВИЛА:\n"
+        "1. КРИТИЧЕСКИ ВАЖНО: Никаких вводных фраз вроде 'Вот ваш результат:', 'I'll generate...', 'Конечно, держи!'. "
+        "Начинай СРАЗУ с генерации.\n"
+        "2. КРИТИЧЕСКИ ВАЖНО: Никаких заключительных фраз, дисклеймеров, блоков 'Подсказка для вашей ситуации' и прочих советов в конце ответа.\n"
+        "3. Формат ответа должен содержать строго 3 блока: Title, Description, Tags.\n"
+        f"4. Если выбран язык RU ({lang} == 'RU'), все заголовки блоков, структурный текст описания и теги генерируй на русском языке (ключевые названия битов/исполнителей оставь в английском формате для SEO).\n"
+        f"5. Если выбран язык EN ({lang} == 'EN'), весь текст должен быть строго на английском языке."
+    )
 
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
                 model="openrouter/auto",
-                messages=[{"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}]
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}
+                ]
             ),
             timeout=30.0
         )
