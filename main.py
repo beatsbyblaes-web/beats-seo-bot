@@ -2,7 +2,6 @@ import os
 import sqlite3
 import logging
 import asyncio
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from aiohttp import web
 from openai import AsyncOpenAI
@@ -14,13 +13,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-# Загрузка переменных
+# Загрузка переменных окружения
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 
-# Данные каналов
-TG_CHANNEL_USERNAME = "beatsbyblaes"  
+# Настройки каналов
+TG_CHANNEL_USERNAME = "beatsbyblaes"
 YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
 
 bot = Bot(token=BOT_TOKEN)
@@ -93,7 +92,7 @@ TEXTS = {
         "check_sub_btn": "✅ Проверить подписку",
         "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию/разбор.\nДля продолжения работы оформите подписку.",
         "buy_sub_btn": "⭐ Оформить подписку",
-        "generating": "🤖 Генерирую SEO через DeepSeek...",
+        "generating": "🤖 Генерирую SEO...",
         "parsing": "🔍 Парсим теги с YouTube..."
     },
     "EN": {
@@ -109,7 +108,7 @@ TEXTS = {
         "check_sub_btn": "✅ Check Subscription",
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your 1 free generation/analysis.\nPlease subscribe to get unlimited access.",
         "buy_sub_btn": "⭐ Subscribe Now",
-        "generating": "🤖 Generating SEO via DeepSeek...",
+        "generating": "🤖 Generating SEO...",
         "parsing": "🔍 Parsing tags from YouTube..."
     }
 }
@@ -126,7 +125,7 @@ def get_main_keyboard(lang):
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- ПРОВЕРКА ПОДПИСКИ В TELEGRAM ---
+# --- ПРОВЕРКА ПОДПИСКИ ---
 async def is_subscribed_to_tg(user_id):
     try:
         member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
@@ -163,7 +162,6 @@ async def start_seo(message: types.Message, state: FSMContext):
     u = get_user(user_id)
     lang = u["lang"]
 
-    # 1. Проверка подписки
     if not await is_subscribed_to_tg(user_id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
@@ -173,7 +171,6 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    # 2. Проверка лимита (1 бесплатная генерация)
     if u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
@@ -229,13 +226,13 @@ async def process_seo(message: types.Message, state: FSMContext):
     try:
         response = await asyncio.wait_for(
             client.chat.completions.create(
-                model="deepseek/deepseek-chat:free",  # Стабильная бесплатная модель
+                model="meta-llama/llama-3.3-70b-instruct:free",
                 messages=[{"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}]
             ),
-            timeout=30.0  # Таймаут 30 секунд
+            timeout=30.0
         )
         
-        increment_limit(user_id, "seo")  # Списываем 1 попытку только при успешном ответе
+        increment_limit(user_id, "seo")
         await state.clear()
         await message.answer(response.choices[0].message.content)
 
@@ -246,7 +243,7 @@ async def process_seo(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(f"⚠️ Ошибка при запросе к AI: {str(e)}")
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER (ПОРТ & KEEP-ALIVE) ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is active!")
 
