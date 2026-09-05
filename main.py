@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 import asyncio
+import aiohttp
 from dotenv import load_dotenv
 from aiohttp import web
 from openai import AsyncOpenAI
@@ -11,17 +12,19 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery
 
-# Загрузка переменных окружения
+# Загрузка переменных окружения из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
+PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA") # Токен ЮKassa из BotFather
 
-# Настройки каналов
 TG_CHANNEL_USERNAME = "beatsbyblaes"
 YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
-ADMIN_USERNAME = "beatsbyblaes" # Юзернейм админа для покупки подписки
+SUB_PRICE_RUB = 490 # Цена подписки в рублях
+SUB_PRICE_USD = 5   # Цена подписки в USD для CryptoBot
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -31,7 +34,7 @@ client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
 )
 
-# --- БАЗА ДАННЫХ (SQLite) ---
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
@@ -58,6 +61,13 @@ def get_user(user_id):
         row = ('RU', 0, 0, 0)
     conn.close()
     return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "is_subscribed": row[3]}
+
+def set_premium(user_id):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_subscribed = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 def update_user_lang(user_id, lang):
     conn = sqlite3.connect("users.db")
@@ -88,14 +98,13 @@ TEXTS = {
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Отправь ссылку на YouTube-видео конкурента:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию/разбор.\nДля продолжения работы оформите подписку.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию.\nОформите подписку для безлимитного доступа.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Генерирую SEO...",
-        "parsing": "🔍 Парсим теги с YouTube...",
-        "buy_info": f"💳 Для покупки безлимитной подписки напишите администратору: @{ADMIN_USERNAME}"
+        "select_pay_method": "💳 Выберите удобный способ оплаты подписки:",
+        "pay_success": "🎉 Поздравляем! Безлимитный доступ успешно активирован."
     },
     "EN": {
         "welcome": "👋 Hi! I am an AI assistant for beatmakers.\n\nChoose an option:",
@@ -105,36 +114,61 @@ TEXTS = {
         "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
         "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Send a link to the competitor's YouTube video:",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
-        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your 1 free generation/analysis.\nPlease subscribe to get unlimited access.",
+        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free limit.\nGet an unlimited subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
         "generating": "🤖 Generating SEO...",
-        "parsing": "🔍 Parsing tags from YouTube...",
-        "buy_info": f"💳 To purchase an unlimited subscription, contact the admin: @{ADMIN_USERNAME}"
+        "select_pay_method": "💳 Choose a payment method for unlimited access:",
+        "pay_success": "🎉 Congratulations! Unlimited access is now active."
     }
 }
 
 class BotStates(StatesGroup):
     waiting_for_seo_input = State()
-    waiting_for_competitor_url = State()
 
 def get_main_keyboard(lang):
     kb = [
         [types.KeyboardButton(text=TEXTS[lang]["gen_seo"])],
-        [types.KeyboardButton(text=TEXTS[lang]["parse_competitor"])],
         [types.KeyboardButton(text=TEXTS[lang]["change_lang"])]
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- ПРОВЕРКА ПОДПИСКИ НА ТГ ---
+# --- ПРОВЕРКА ПОДПИСКИ НА ТГ КАНАЛ ---
 async def is_subscribed_to_tg(user_id):
     try:
         member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
     except Exception:
         return False
+
+# --- API CRYPTOBOT ---
+async def create_crypto_invoice(user_id, amount_usd):
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    payload = {
+        "asset": "USDT",
+        "amount": str(amount_usd),
+        "description": "Unlimited Beatmaker AI Access",
+        "payload": str(user_id)
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if data.get("ok"):
+                return data["result"]["bot_invoice_url"], data["result"]["invoice_id"]
+            return None, None
+
+async def check_crypto_invoice(invoice_id):
+    url = "https://pay.crypt.bot/api/getInvoices"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    payload = {"invoice_ids": [invoice_id]}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if data.get("ok") and len(data["result"]["items"]) > 0:
+                return data["result"]["items"][0]["status"] == "paid"
+            return False
 
 # --- ХЭНДЛЕРЫ ---
 @dp.message(Command("start"))
@@ -159,6 +193,75 @@ async def set_language(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
 
+# --- ВЫБОР И ОФОРМЛЕНИЕ ОПЛАТЫ ---
+@dp.callback_query(F.data == "buy_subscription")
+async def show_payment_options(callback: types.CallbackQuery):
+    u = get_user(callback.from_user.id)
+    lang = u["lang"]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 СБП / Карта (ЮKassa)", callback_data="pay_yukassa")],
+        [InlineKeyboardButton(text="💎 Криптовалюта (CryptoBot)", callback_data="pay_crypto")]
+    ])
+    await callback.message.answer(TEXTS[lang]["select_pay_method"], reply_markup=kb)
+    await callback.answer()
+
+@dp.callback_query(F.data == "pay_yukassa")
+async def pay_yukassa_handler(callback: types.CallbackQuery):
+    if not PROVIDER_TOKEN_YUKASSA:
+        await callback.answer("⚠️ Токен ЮKassa еще не подключен в BotFather.", show_alert=True)
+        return
+
+    prices = [LabeledPrice(label="Безлимитная подписка", amount=SUB_PRICE_RUB * 100)]
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Безлимитная подписка",
+        description="Пожизненный доступ к генерации SEO.",
+        provider_token=PROVIDER_TOKEN_YUKASSA,
+        currency="RUB",
+        prices=prices,
+        start_parameter="unlimited_sub",
+        payload=f"sub_{callback.from_user.id}"
+    )
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def successful_payment_handler(message: types.Message):
+    set_premium(message.from_user.id)
+    u = get_user(message.from_user.id)
+    await message.answer(TEXTS[u["lang"]]["pay_success"])
+
+@dp.callback_query(F.data == "pay_crypto")
+async def pay_crypto_handler(callback: types.CallbackQuery):
+    invoice_url, invoice_id = await create_crypto_invoice(callback.from_user.id, SUB_PRICE_USD)
+    if invoice_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Оплатить через CryptoBot", url=invoice_url)],
+            [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_pay_{invoice_id}")]
+        ])
+        await callback.message.answer("Оплатите счет через CryptoBot и нажмите «Проверить оплату»:", reply_markup=kb)
+    else:
+        await callback.answer("⚠️ Ошибка создания счета. Проверьте настройки CryptoBot.", show_alert=True)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("check_pay_"))
+async def check_crypto_pay_handler(callback: types.CallbackQuery):
+    invoice_id = callback.data.split("_")[2]
+    is_paid = await check_crypto_invoice(invoice_id)
+    
+    if is_paid:
+        set_premium(callback.from_user.id)
+        u = get_user(callback.from_user.id)
+        await callback.message.answer(TEXTS[u["lang"]]["pay_success"])
+        await callback.message.delete()
+    else:
+        await callback.answer("❌ Оплата еще не прошла. Выполните платеж и повторите попытку.", show_alert=True)
+
+# --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -174,7 +277,7 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    if u["seo_used"] >= 1:
+    if u["is_subscribed"] == 0 and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
         ])
@@ -184,56 +287,13 @@ async def start_seo(message: types.Message, state: FSMContext):
     await state.set_state(BotStates.waiting_for_seo_input)
     await message.answer(TEXTS[lang]["ask_seo_topic"])
 
-@dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
-async def start_parser(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    u = get_user(user_id)
-    lang = u["lang"]
-
-    if not await is_subscribed_to_tg(user_id):
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
-            [InlineKeyboardButton(text="▶️ YouTube Channel", url=YT_CHANNEL_URL)],
-            [InlineKeyboardButton(text=TEXTS[lang]["check_sub_btn"], callback_data="check_sub")]
-        ])
-        await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
-        return
-
-    if u["parser_used"] >= 1:
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
-        ])
-        await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
-        return
-
-    await state.set_state(BotStates.waiting_for_competitor_url)
-    await message.answer(TEXTS[lang]["ask_competitor_url"])
-
-@dp.callback_query(F.data == "check_sub")
-async def check_sub_callback(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    u = get_user(user_id)
-    if await is_subscribed_to_tg(user_id):
-        await callback.message.delete()
-        await callback.message.answer("🎉 Спасибо за подписку! Доступ открыт.", reply_markup=get_main_keyboard(u["lang"]))
-    else:
-        await callback.answer("❌ Подписка не найдена. Подпишитесь на канал!", show_alert=True)
-
-@dp.callback_query(F.data == "buy_subscription")
-async def buy_sub_callback(callback: types.CallbackQuery):
-    u = get_user(callback.from_user.id)
-    await callback.message.answer(TEXTS[u["lang"]]["buy_info"])
-    await callback.answer()
-
-# --- ИСПОЛНЕНИЕ SEO ---
 @dp.message(BotStates.waiting_for_seo_input)
 async def process_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
 
-    # Двойная проверка лимита перед запуском запроса к AI
-    if u["seo_used"] >= 1:
+    if u["is_subscribed"] == 0 and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
         ])
@@ -284,14 +344,14 @@ async def process_seo(message: types.Message, state: FSMContext):
 
     except asyncio.TimeoutError:
         await state.clear()
-        await message.answer("⚠️ Сервер нейросети перегружен и не ответил за 30 секунд. Попробуй ещё раз чуть позже!")
+        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!")
     except Exception as e:
         await state.clear()
-        await message.answer(f"⚠️ Ошибка при запросе к AI: {str(e)}")
+        await message.answer(f"⚠️ Ошибка: {str(e)}")
 
-# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
+# --- ВЕБ-СЕРВЕР DUMMY DOCKER ---
 async def handle(request):
-    return web.Response(text="Bot is active!")
+    return web.Response(text="Bot is running!")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -303,7 +363,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot with Freemium system launched!")
+    print("🚀 Bot launcher active!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
