@@ -233,8 +233,8 @@ async def process_seo(message: types.Message, state: FSMContext):
         "Title: [FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
         "Description:\n"
         "[FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
-        "INSTAGRAM: blaes.ss\n\n"
-        "MAIL: beatsbyblaes@gmail.com\n\n"
+        "INSTAGRAM: \n\n"
+        "MAIL: \n\n"
         "BPM: [BPM]\n"
         "KEY: [Key]\n\n"
         "FREE FOR NON PROFIT USE, FOR COMMERCIAL USE PLEASE PURCHASE A LEASE. ANYONE WHO RELEASES A SONG WITHOUT A LEASE WILL BE HIT WITH COPYRIGHT.\n\n"
@@ -243,7 +243,8 @@ async def process_seo(message: types.Message, state: FSMContext):
         "[Подберите 15-20 релевантных SEO тегов через запятую в стиле битмейкинга]\n\n"
         "Tags:\n"
         "[Те же теги списком через запятую]\n\n"
-        "3. Если пользователь не указал BPM или Key, придумай подходящие значения под этот жанр."
+        "3. Важно: после INSTAGRAM: и MAIL: НЕ ПИШИ НИКАКИЕ значения, оставляй эти строчки пустыми.\n"
+        "4. Если пользователь не указал BPM или Key, придумай подходящие значения под этот жанр."
     )
 
     try:
