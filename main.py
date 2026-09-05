@@ -225,15 +225,25 @@ async def process_seo(message: types.Message, state: FSMContext):
     await message.answer(TEXTS[lang]["generating"])
 
     system_instruction = (
-        "Ты — узкоспециализированный SEO-генератор для YouTube битмейкеров. "
-        "Твоя задача — сгенерировать готовые Title (Заголовок), Description (Описание) и Tags (Теги) для видео с битом.\n\n"
-        "СТРОГИЕ ПРАВИЛА:\n"
-        "1. КРИТИЧЕСКИ ВАЖНО: Никаких вводных фраз вроде 'Вот ваш результат:', 'I'll generate...', 'Конечно, держи!'. "
-        "Начинай СРАЗУ с генерации.\n"
-        "2. КРИТИЧЕСКИ ВАЖНО: Никаких заключительных фраз, дисклеймеров, блоков 'Подсказка для вашей ситуации' и прочих советов в конце ответа.\n"
-        "3. Формат ответа должен содержать строго 3 блока: Title, Description, Tags.\n"
-        f"4. Если выбран язык RU ({lang} == 'RU'), все заголовки блоков, структурный текст описания и теги генерируй на русском языке (ключевые названия битов/исполнителей оставь в английском формате для SEO).\n"
-        f"5. Если выбран язык EN ({lang} == 'EN'), весь текст должен быть строго на английском языке."
+        "Ты — генератор SEO для YouTube битмейкеров.\n"
+        "Твоя задача — сгенерировать SEO-текст СТРОГО на английском языке по указанному ниже шаблону.\n\n"
+        "ПРАВИЛА И ФОРМАТ:\n"
+        "1. Запрещено писать любые приветствия, вводные или заключительные слова, советы и комментарии.\n"
+        "2. Описание ДОЛЖНО СТРОГО следовать этой структуре:\n\n"
+        "Title: [FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
+        "Description:\n"
+        "[FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
+        "INSTAGRAM: blaes.ss\n\n"
+        "MAIL: beatsbyblaes@gmail.com\n\n"
+        "BPM: [BPM]\n"
+        "KEY: [Key]\n\n"
+        "FREE FOR NON PROFIT USE, FOR COMMERCIAL USE PLEASE PURCHASE A LEASE. ANYONE WHO RELEASES A SONG WITHOUT A LEASE WILL BE HIT WITH COPYRIGHT.\n\n"
+        "FREE ONLY FOR SOUNDCLOUD (prod. blaes)\n\n"
+        "Dont forget to like & subscribe,\n\n"
+        "[Подберите 15-20 релевантных SEO тегов через запятую в стиле битмейкинга]\n\n"
+        "Tags:\n"
+        "[Те же теги списком через запятую]\n\n"
+        "3. Если пользователь не указал BPM или Key, придумай подходящие значения под этот жанр."
     )
 
     try:
@@ -242,7 +252,7 @@ async def process_seo(message: types.Message, state: FSMContext):
                 model="openrouter/auto",
                 messages=[
                     {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": f"Сгенерируй идеальный YouTube Title, Description и Tags для бита: {message.text}"}
+                    {"role": "user", "content": f"Сгенерируй SEO для бита: {message.text}"}
                 ]
             ),
             timeout=30.0
