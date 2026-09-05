@@ -6,7 +6,10 @@ from datetime import datetime, timedelta
 import aiohttp
 from dotenv import load_dotenv
 from aiohttp import web
-from openai import AsyncOpenAI
+
+# Официальный SDK Google GenAI
+from google import genai
+from google.genai import types as genai_types
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -17,14 +20,18 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPri
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
+
+# ТЕЛЕГРАМ ID АДМИНИСТРАТОРОВ (укажи свой ID, можно через запятую: [12345678, 87654321])
+# Чтобы узнать ID, напиши @userinfobot в Telegram
+ADMIN_IDS = [7742046461]  # <-- Вставь сюда свой реальный числовой ID
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
 YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
 
-# Тарифная сетка: дни, рубли, usd
+# Тарифная сетка
 PLANS = {
     "1m": {"name": "1 месяц", "days": 30, "price_rub": 390, "price_usd": 4},
     "3m": {"name": "3 месяца", "days": 90, "price_rub": 890, "price_usd": 9},
@@ -34,10 +41,8 @@ PLANS = {
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-client = AsyncOpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY,
-)
+# Клиент Gemini
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -68,6 +73,8 @@ def get_user(user_id):
     return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "sub_until": row[3]}
 
 def is_user_subscribed(user_id):
+    if user_id in ADMIN_IDS:
+        return True
     u = get_user(user_id)
     if not u["sub_until"]:
         return False
@@ -123,35 +130,37 @@ init_db()
 # --- ЛОКАЛИЗАЦИЯ ---
 TEXTS = {
     "RU": {
-        "welcome": "👋 Привет! Я AI-помощник для битмейкеров.\n\nВыбери нужную функцию:",
+        "welcome": "👋 Привет! Я AI-помощник для битмейкеров на базе Google Gemini.\n\nВыбери нужную функцию:",
         "gen_seo": "🚀 Сгенерировать SEO",
-        "parse_competitor": "🔍 Разобрать конкурента",
         "change_lang": "🌐 Язык / Language",
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
+        "sub_success_alert": "🎉 Спасибо! Подписка подтверждена. Теперь выберите действие.",
+        "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена! Проверьте подписку и попробуйте снова.",
         "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
-        "generating": "🤖 Генерирую SEO...",
+        "generating": "🤖 Gemini генерирует идеальное SEO...",
         "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
     "EN": {
-        "welcome": "👋 Hi! I am an AI assistant for beatmakers.\n\nChoose an option:",
+        "welcome": "👋 Hi! I am a Gemini-powered AI assistant for beatmakers.\n\nChoose an option:",
         "gen_seo": "🚀 Generate SEO",
-        "parse_competitor": "🔍 Analyze Competitor",
         "change_lang": "🌐 Language / Язык",
         "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
         "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
+        "sub_success_alert": "🎉 Thank you! Subscription verified.",
+        "sub_fail_alert": "❌ Telegram channel subscription not found! Please subscribe first.",
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
-        "generating": "🤖 Generating SEO...",
+        "generating": "🤖 Gemini is generating SEO...",
         "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
         "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
@@ -168,13 +177,34 @@ def get_main_keyboard(lang):
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- ПРОВЕРКА ПОДПИСКИ TG ---
+# --- ПРОВЕРКА ПОДПИСКИ НА ТГ ---
 async def is_subscribed_to_tg(user_id):
+    if user_id in ADMIN_IDS:
+        return True
     try:
         member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
-    except Exception:
+    except Exception as e:
+        logging.error(f"Error checking chat member: {e}")
+        # Если бот не может проверить (например, не добавлен админом), не блокируем пользователя намертво
         return False
+
+# --- ХЭНДЛЕР ПРОВЕРКИ КНОПКИ ПОДПИСКИ ---
+@dp.callback_query(F.data == "check_sub")
+async def check_sub_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    u = get_user(user_id)
+    lang = u["lang"]
+
+    if await is_subscribed_to_tg(user_id):
+        await callback.answer(TEXTS[lang]["sub_success_alert"], show_alert=True)
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(TEXTS[lang]["welcome"], reply_markup=get_main_keyboard(lang))
+    else:
+        await callback.answer(TEXTS[lang]["sub_fail_alert"], show_alert=True)
 
 # --- CRYPTOBOT API ---
 async def create_crypto_invoice(user_id, plan_key):
@@ -206,7 +236,7 @@ async def check_crypto_invoice(invoice_id):
                 return item["status"] == "paid", item.get("payload")
             return False, None
 
-# --- СТАРТ И ЯЗЫК ---
+# --- КОМАНДЫ И МЕНЮ ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -229,7 +259,7 @@ async def set_language(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
 
-# --- ШАГ 1: ВЫБОР ТАРИФА ---
+# --- ПЛАНЫ И ОПЛАТА ---
 @dp.callback_query(F.data == "buy_subscription")
 async def show_plans_menu(callback: types.CallbackQuery):
     u = get_user(callback.from_user.id)
@@ -243,7 +273,6 @@ async def show_plans_menu(callback: types.CallbackQuery):
     await callback.message.answer(TEXTS[lang]["choose_plan"], reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-# --- ШАГ 2: ВЫБОР МЕТОДА ОПЛАТЫ ---
 @dp.callback_query(F.data.startswith("plan_"))
 async def show_methods_menu(callback: types.CallbackQuery):
     plan_key = callback.data.split("_")[1]
@@ -265,7 +294,6 @@ async def show_methods_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-# --- ОБРАБОТЧИКИ ОПЛАТЫ ---
 @dp.callback_query(F.data.startswith("pay_sbp_"))
 async def pay_sbp_handler(callback: types.CallbackQuery):
     plan_key = callback.data.split("_")[2]
@@ -330,7 +358,7 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO ---
+# --- ГЕНЕРАЦИЯ ЧЕРЕЗ GOOGLE GEMINI ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -373,12 +401,12 @@ async def process_seo(message: types.Message, state: FSMContext):
     await message.answer(TEXTS[lang]["generating"])
 
     system_instruction = (
-        "Ты — генератор SEO для YouTube битмейкеров.\n"
-        "Твоя задача — сгенерировать SEO-текст СТРОГО на английском языке по указанному ниже шаблону.\n\n"
-        "ПРАВИЛА И ФОРМАТ:\n"
-        "1. Придумай ОДНО название бита (Beat Name). Оно должно быть СТРОГО ОДИНАКОВЫМ в Title и в первой строке Description.\n"
-        "2. Запрещено писать любые приветствия, вводные или заключительные слова, советы и комментарии.\n"
-        "3. Описание ДОЛЖНО СТРОГО следовать этой структуре:\n\n"
+        "You are an expert YouTube SEO generator specialized for beatmakers.\n"
+        "Generate SEO text STRICTLY in English following the exact structure below.\n\n"
+        "RULES:\n"
+        "1. Create ONE consistent beat name. It must be identical in Title and the first line of Description.\n"
+        "2. Do NOT output any intro, greetings, commentary, or advice.\n"
+        "3. Follow this EXACT format:\n\n"
         "Title: [FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
         "Description:\n"
         "[FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
@@ -389,34 +417,39 @@ async def process_seo(message: types.Message, state: FSMContext):
         "FREE FOR NON PROFIT USE, FOR COMMERCIAL USE PLEASE PURCHASE A LEASE. ANYONE WHO RELEASES A SONG WITHOUT A LEASE WILL BE HIT WITH COPYRIGHT.\n\n"
         "FREE ONLY FOR SOUNDCLOUD (prod. [your name])\n\n"
         "Dont forget to like & subscribe,\n\n"
-        "[Подберите 15-20 релевантных SEO тегов через запятую в стиле битмейкинга]\n\n"
+        "[15-20 relevant comma-separated SEO tags for the beat style]\n\n"
         "Tags:\n"
-        "[Те же теги списком через запятую]\n\n"
-        "4. Если пользователь не указал BPM или Key, придумай подходящие значения под этот жанр."
+        "[Same tags as a comma-separated list]\n\n"
+        "4. If BPM or Key is not specified by the user, invent suitable values for the genre."
     )
 
     try:
+        loop = asyncio.get_running_loop()
         response = await asyncio.wait_for(
-            client.chat.completions.create(
-                model="openrouter/auto",
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": f"Сгенерируй SEO для бита: {message.text}"}
-                ]
+            loop.run_in_executor(
+                None,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=f"Generate SEO for beat: {message.text}",
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.7
+                    )
+                )
             ),
             timeout=30.0
         )
         
         increment_limit(user_id, "seo")
         await state.clear()
-        await message.answer(response.choices[0].message.content)
+        await message.answer(response.text)
 
     except asyncio.TimeoutError:
         await state.clear()
-        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!")
+        await message.answer("⚠️ Сервер Gemini не ответил вовремя. Попробуй ещё раз чуть позже!")
     except Exception as e:
         await state.clear()
-        await message.answer(f"⚠️ Ошибка: {str(e)}")
+        await message.answer(f"⚠️ Ошибка Gemini API: {str(e)}")
 
 # --- СЕРВЕР RENDER ---
 async def handle(request):
@@ -432,7 +465,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot started with Subscription plans and Multi-Payments!")
+    print("🚀 Bot launcher ready with Check Sub fix!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
