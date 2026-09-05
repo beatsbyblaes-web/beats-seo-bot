@@ -7,6 +7,7 @@ import aiohttp
 from dotenv import load_dotenv
 from aiohttp import web
 
+# Официальный SDK Google GenAI
 from google import genai
 from google.genai import types as genai_types
 
@@ -126,41 +127,45 @@ def increment_limit(user_id, limit_type):
 
 init_db()
 
-# --- СЛОВАРЬ ---
+# --- СЛОВАРЬ ЛОКАЛИЗАЦИИ ---
 TEXTS = {
     "RU": {
         "welcome": "👋 Привет! Я AI-помощник для битмейкеров на базе Google Gemini.\n\nВыбери нужную функцию:",
         "gen_seo": "🚀 Сгенерировать SEO",
+        "parse_competitor": "🔍 Разобрать конкурента",
         "change_lang": "🌐 Язык / Language",
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
+        "ask_competitor_url": "🔗 Отправь ссылку или название видео конкурента для анализа:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
         "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию.\nОформите подписку для продолжения работы.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную попытку.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
-        "generating": "🤖 Gemini генерирует идеальное SEO...",
-        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
+        "generating": "🤖 Gemini анализирует...",
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к SEO-инструментам для ваших битов.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
     "EN": {
         "welcome": "👋 Hi! I am a Gemini-powered AI assistant for beatmakers.\n\nChoose an option:",
         "gen_seo": "🚀 Generate SEO",
+        "parse_competitor": "🔍 Analyze Competitor",
         "change_lang": "🌐 Language / Язык",
         "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
         "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
+        "ask_competitor_url": "🔗 Send the competitor's YouTube link or title to analyze:",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
         "sub_success_alert": "🎉 Subscription verified!",
         "sub_fail_alert": "❌ Channel subscription not found. Please subscribe first!",
-        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
+        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
-        "generating": "🤖 Gemini is generating SEO...",
-        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
+        "generating": "🤖 Gemini is analyzing...",
+        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI tools for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
         "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
     }
@@ -168,10 +173,12 @@ TEXTS = {
 
 class BotStates(StatesGroup):
     waiting_for_seo_input = State()
+    waiting_for_competitor_input = State()
 
 def get_main_keyboard(lang):
     kb = [
         [types.KeyboardButton(text=TEXTS[lang]["gen_seo"])],
+        [types.KeyboardButton(text=TEXTS[lang]["parse_competitor"])],
         [types.KeyboardButton(text=TEXTS[lang]["change_lang"])]
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
@@ -193,12 +200,11 @@ async def start_cmd(message: types.Message, state: FSMContext):
     u = get_user(message.from_user.id)
     await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
 
-# Секретная команда сброса для админа (для тестов)
 @dp.message(Command("reset"))
 async def reset_cmd(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
         reset_user_limits(message.from_user.id)
-        await message.answer("🔄 Ваши лимиты сброшены до 0 (аккаунт как новый).")
+        await message.answer("🔄 Ваши лимиты сброшены до 0.")
 
 @dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
 async def lang_menu(message: types.Message):
@@ -360,14 +366,13 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO (СТРОГАЯ ВОРОНКА) ---
+# --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
 
-    # 1. СТРОГИЙ ШАГ: Сначала проверяем обязательную подписку на каналы!
     if not await is_subscribed_to_tg(user_id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
@@ -377,7 +382,6 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    # 2. ШАГ: Проверяем, есть ли оплаченная подписка или остался ли бесплатный лимит
     if not is_user_subscribed(user_id) and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
@@ -385,7 +389,6 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    # 3. ШАГ: Допуск к генерации
     await state.set_state(BotStates.waiting_for_seo_input)
     await message.answer(TEXTS[lang]["ask_seo_topic"])
 
@@ -456,6 +459,86 @@ async def process_seo(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(f"⚠️ Ошибка Gemini API: {str(e)}")
 
+
+# --- РАЗБОР КОНКУРЕНТА ---
+@dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
+async def start_parser(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    u = get_user(user_id)
+    lang = u["lang"]
+
+    if not await is_subscribed_to_tg(user_id):
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
+            [InlineKeyboardButton(text="▶️ YouTube Channel", url=YT_CHANNEL_URL)],
+            [InlineKeyboardButton(text=TEXTS[lang]["check_sub_btn"], callback_data="check_sub")]
+        ])
+        await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if not is_user_subscribed(user_id) and u["parser_used"] >= 1:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
+        ])
+        await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
+        return
+
+    await state.set_state(BotStates.waiting_for_competitor_input)
+    await message.answer(TEXTS[lang]["ask_competitor_url"])
+
+@dp.message(BotStates.waiting_for_competitor_input)
+async def process_parser(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    u = get_user(user_id)
+    lang = u["lang"]
+
+    if not is_user_subscribed(user_id) and u["parser_used"] >= 1:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
+        ])
+        await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
+        await state.clear()
+        return
+
+    await message.answer(TEXTS[lang]["generating"])
+
+    parser_instruction = (
+        "You are an expert YouTube competitor analyst for beatmakers.\n"
+        "Analyze the provided competitor video title, link, or topic and provide a structured breakdown:\n"
+        "1. Estimated style and sub-genre\n"
+        "2. Why this title/SEO works well\n"
+        "3. Recommended optimized tags inspired by this competitor style (15-20 tags).\n"
+        "Keep it professional and concise in English."
+    )
+
+    try:
+        loop = asyncio.get_running_loop()
+        response = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: gemini_client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=f"Analyze this competitor: {message.text}",
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=parser_instruction,
+                        temperature=0.7
+                    )
+                )
+            ),
+            timeout=30.0
+        )
+        
+        increment_limit(user_id, "parser")
+        await state.clear()
+        await message.answer(response.text)
+
+    except asyncio.TimeoutError:
+        await state.clear()
+        await message.answer("⚠️ Сервер Gemini не ответил вовремя. Попробуй ещё раз чуть позже!")
+    except Exception as e:
+        await state.clear()
+        await message.answer(f"⚠️ Ошибка Gemini API: {str(e)}")
+
 # --- СЕРВЕР RENDER ---
 async def handle(request):
     return web.Response(text="Bot is online!")
@@ -470,7 +553,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with fixed order of subscription checks!")
+    print("🚀 Bot launched with Competitor Analyzer and Python 3.11 support!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
