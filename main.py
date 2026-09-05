@@ -21,6 +21,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 # Настройки каналов
 TG_CHANNEL_USERNAME = "beatsbyblaes"
 YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
+ADMIN_USERNAME = "beatsbyblaes" # Юзернейм админа для покупки подписки
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -52,7 +53,7 @@ def get_user(user_id):
     cursor.execute("SELECT lang, seo_used, parser_used, is_subscribed FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
-        cursor.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        cursor.execute("INSERT INTO users (user_id, lang, seo_used, parser_used, is_subscribed) VALUES (?, 'RU', 0, 0, 0)", (user_id,))
         conn.commit()
         row = ('RU', 0, 0, 0)
     conn.close()
@@ -93,7 +94,8 @@ TEXTS = {
         "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию/разбор.\nДля продолжения работы оформите подписку.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Генерирую SEO...",
-        "parsing": "🔍 Парсим теги с YouTube..."
+        "parsing": "🔍 Парсим теги с YouTube...",
+        "buy_info": f"💳 Для покупки безлимитной подписки напишите администратору: @{ADMIN_USERNAME}"
     },
     "EN": {
         "welcome": "👋 Hi! I am an AI assistant for beatmakers.\n\nChoose an option:",
@@ -109,7 +111,8 @@ TEXTS = {
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your 1 free generation/analysis.\nPlease subscribe to get unlimited access.",
         "buy_sub_btn": "⭐ Subscribe Now",
         "generating": "🤖 Generating SEO...",
-        "parsing": "🔍 Parsing tags from YouTube..."
+        "parsing": "🔍 Parsing tags from YouTube...",
+        "buy_info": f"💳 To purchase an unlimited subscription, contact the admin: @{ADMIN_USERNAME}"
     }
 }
 
@@ -125,7 +128,7 @@ def get_main_keyboard(lang):
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- ПРОВЕРКА ПОДПИСКИ ---
+# --- ПРОВЕРКА ПОДПИСКИ НА ТГ ---
 async def is_subscribed_to_tg(user_id):
     try:
         member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
@@ -216,12 +219,28 @@ async def check_sub_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Подписка не найдена. Подпишитесь на канал!", show_alert=True)
 
+@dp.callback_query(F.data == "buy_subscription")
+async def buy_sub_callback(callback: types.CallbackQuery):
+    u = get_user(callback.from_user.id)
+    await callback.message.answer(TEXTS[u["lang"]]["buy_info"])
+    await callback.answer()
+
 # --- ИСПОЛНЕНИЕ SEO ---
 @dp.message(BotStates.waiting_for_seo_input)
 async def process_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
+
+    # Двойная проверка лимита перед запуском запроса к AI
+    if u["seo_used"] >= 1:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
+        ])
+        await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
+        await state.clear()
+        return
+
     await message.answer(TEXTS[lang]["generating"])
 
     system_instruction = (
