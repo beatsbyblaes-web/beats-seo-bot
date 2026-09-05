@@ -7,7 +7,6 @@ import aiohttp
 from dotenv import load_dotenv
 from aiohttp import web
 
-# Официальный SDK Google GenAI
 from google import genai
 from google.genai import types as genai_types
 
@@ -24,14 +23,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
-# ТЕЛЕГРАМ ID АДМИНИСТРАТОРОВ (укажи свой ID, можно через запятую: [12345678, 87654321])
-# Чтобы узнать ID, напиши @userinfobot в Telegram
-ADMIN_IDS = [7742046461]  # <-- Вставь сюда свой реальный числовой ID
+# Твой ID администратора
+ADMIN_IDS = [7742046461]
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
 YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
 
-# Тарифная сетка
 PLANS = {
     "1m": {"name": "1 месяц", "days": 30, "price_rub": 390, "price_usd": 4},
     "3m": {"name": "3 месяца", "days": 90, "price_rub": 890, "price_usd": 9},
@@ -40,8 +37,6 @@ PLANS = {
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-
-# Клиент Gemini
 gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # --- БАЗА ДАННЫХ ---
@@ -72,6 +67,13 @@ def get_user(user_id):
     conn.close()
     return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "sub_until": row[3]}
 
+def reset_user_limits(user_id):
+    conn = sqlite3.connect("users.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET seo_used = 0, parser_used = 0, sub_until = NULL WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
 def is_user_subscribed(user_id):
     if user_id in ADMIN_IDS:
         return True
@@ -93,10 +95,7 @@ def add_subscription_days(user_id, days):
     if u["sub_until"]:
         try:
             current_expire = datetime.strptime(u["sub_until"], "%Y-%m-%d %H:%M:%S")
-            if current_expire > now:
-                new_expire = current_expire + timedelta(days=days)
-            else:
-                new_expire = now + timedelta(days=days)
+            new_expire = max(current_expire, now) + timedelta(days=days)
         except Exception:
             new_expire = now + timedelta(days=days)
     else:
@@ -127,7 +126,7 @@ def increment_limit(user_id, limit_type):
 
 init_db()
 
-# --- ЛОКАЛИЗАЦИЯ ---
+# --- СЛОВАРЬ ---
 TEXTS = {
     "RU": {
         "welcome": "👋 Привет! Я AI-помощник для битмейкеров на базе Google Gemini.\n\nВыбери нужную функцию:",
@@ -138,8 +137,8 @@ TEXTS = {
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
-        "sub_success_alert": "🎉 Спасибо! Подписка подтверждена. Теперь выберите действие.",
-        "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена! Проверьте подписку и попробуйте снова.",
+        "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
+        "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
         "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Gemini генерирует идеальное SEO...",
@@ -156,8 +155,8 @@ TEXTS = {
         "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
-        "sub_success_alert": "🎉 Thank you! Subscription verified.",
-        "sub_fail_alert": "❌ Telegram channel subscription not found! Please subscribe first.",
+        "sub_success_alert": "🎉 Subscription verified!",
+        "sub_fail_alert": "❌ Channel subscription not found. Please subscribe first!",
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
         "generating": "🤖 Gemini is generating SEO...",
@@ -177,7 +176,6 @@ def get_main_keyboard(lang):
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- ПРОВЕРКА ПОДПИСКИ НА ТГ ---
 async def is_subscribed_to_tg(user_id):
     if user_id in ADMIN_IDS:
         return True
@@ -185,11 +183,39 @@ async def is_subscribed_to_tg(user_id):
         member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
         return member.status in ["member", "administrator", "creator"]
     except Exception as e:
-        logging.error(f"Error checking chat member: {e}")
-        # Если бот не может проверить (например, не добавлен админом), не блокируем пользователя намертво
+        logging.error(f"Error checking sub: {e}")
         return False
 
-# --- ХЭНДЛЕР ПРОВЕРКИ КНОПКИ ПОДПИСКИ ---
+# --- ХЭНДЛЕРЫ МЕНЮ ---
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    u = get_user(message.from_user.id)
+    await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
+
+# Секретная команда сброса для админа (для тестов)
+@dp.message(Command("reset"))
+async def reset_cmd(message: types.Message):
+    if message.from_user.id in ADMIN_IDS:
+        reset_user_limits(message.from_user.id)
+        await message.answer("🔄 Ваши лимиты сброшены до 0 (аккаунт как новый).")
+
+@dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
+async def lang_menu(message: types.Message):
+    u = get_user(message.from_user.id)
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_RU"),
+         InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_EN")]
+    ])
+    await message.answer(TEXTS[u["lang"]]["select_lang"], reply_markup=inline_kb)
+
+@dp.callback_query(F.data.startswith("set_lang_"))
+async def set_language(callback: types.CallbackQuery):
+    lang = callback.data.split("_")[2]
+    update_user_lang(callback.from_user.id, lang)
+    await callback.message.delete()
+    await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
+
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_handler(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -206,7 +232,7 @@ async def check_sub_handler(callback: types.CallbackQuery):
     else:
         await callback.answer(TEXTS[lang]["sub_fail_alert"], show_alert=True)
 
-# --- CRYPTOBOT API ---
+# --- ПЛАТЕЖИ ---
 async def create_crypto_invoice(user_id, plan_key):
     plan = PLANS[plan_key]
     url = "https://pay.crypt.bot/api/createInvoice"
@@ -236,30 +262,6 @@ async def check_crypto_invoice(invoice_id):
                 return item["status"] == "paid", item.get("payload")
             return False, None
 
-# --- КОМАНДЫ И МЕНЮ ---
-@dp.message(Command("start"))
-async def start_cmd(message: types.Message, state: FSMContext):
-    await state.clear()
-    u = get_user(message.from_user.id)
-    await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
-
-@dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
-async def lang_menu(message: types.Message):
-    u = get_user(message.from_user.id)
-    inline_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_RU"),
-         InlineKeyboardButton(text="🇬🇧 English", callback_data="set_lang_EN")]
-    ])
-    await message.answer(TEXTS[u["lang"]]["select_lang"], reply_markup=inline_kb)
-
-@dp.callback_query(F.data.startswith("set_lang_"))
-async def set_language(callback: types.CallbackQuery):
-    lang = callback.data.split("_")[2]
-    update_user_lang(callback.from_user.id, lang)
-    await callback.message.delete()
-    await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
-
-# --- ПЛАНЫ И ОПЛАТА ---
 @dp.callback_query(F.data == "buy_subscription")
 async def show_plans_menu(callback: types.CallbackQuery):
     u = get_user(callback.from_user.id)
@@ -358,13 +360,14 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ ЧЕРЕЗ GOOGLE GEMINI ---
+# --- ГЕНЕРАЦИЯ SEO (СТРОГАЯ ВОРОНКА) ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
 
+    # 1. СТРОГИЙ ШАГ: Сначала проверяем обязательную подписку на каналы!
     if not await is_subscribed_to_tg(user_id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
@@ -374,6 +377,7 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
+    # 2. ШАГ: Проверяем, есть ли оплаченная подписка или остался ли бесплатный лимит
     if not is_user_subscribed(user_id) and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
@@ -381,6 +385,7 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
         return
 
+    # 3. ШАГ: Допуск к генерации
     await state.set_state(BotStates.waiting_for_seo_input)
     await message.answer(TEXTS[lang]["ask_seo_topic"])
 
@@ -465,7 +470,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launcher ready with Check Sub fix!")
+    print("🚀 Bot launched with fixed order of subscription checks!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
