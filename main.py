@@ -6,10 +6,7 @@ from datetime import datetime, timedelta
 import aiohttp
 from dotenv import load_dotenv
 from aiohttp import web
-
-# Официальный SDK Google GenAI
-from google import genai
-from google.genai import types as genai_types
+from openai import AsyncOpenAI
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -20,11 +17,11 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPri
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
-# Твой ID администратора
+# ID администратора (полный безлимит)
 ADMIN_IDS = [7742046461]
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
@@ -38,7 +35,13 @@ PLANS = {
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Подключение Gemini через скоростной шлюз OpenRouter
+client = AsyncOpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
+GEMINI_MODEL = "google/gemini-2.5-flash"  # Официальная сверхбыстрая модель Gemini 2.5
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -137,15 +140,15 @@ TEXTS = {
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Отправь ссылку или название видео конкурента для анализа:",
+        "ask_competitor_url": "🔗 Отправь ссылку или название трека конкурента для разбора:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
         "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную попытку.\nОформите подписку для продолжения работы.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
-        "generating": "🤖 Gemini анализирует...",
-        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к SEO-инструментам для ваших битов.",
+        "generating": "🤖 Gemini генерирует ответ...",
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
@@ -157,15 +160,15 @@ TEXTS = {
         "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
         "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Send the competitor's YouTube link or title to analyze:",
+        "ask_competitor_url": "🔗 Send competitor video title or link for analysis:",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
         "sub_success_alert": "🎉 Subscription verified!",
         "sub_fail_alert": "❌ Channel subscription not found. Please subscribe first!",
-        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free limit.\nGet a subscription to continue.",
+        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
-        "generating": "🤖 Gemini is analyzing...",
-        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI tools for your beats.",
+        "generating": "🤖 Gemini is generating output...",
+        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
         "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
     }
@@ -204,7 +207,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
 async def reset_cmd(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
         reset_user_limits(message.from_user.id)
-        await message.answer("🔄 Ваши лимиты сброшены до 0.")
+        await message.answer("🔄 Ваши лимиты сброшены до 0 (аккаунт как новый).")
 
 @dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
 async def lang_menu(message: types.Message):
@@ -366,7 +369,7 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO ---
+# --- ГЕНЕРАЦИЯ SEO ЧЕРЕЗ GEMINI ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -432,35 +435,29 @@ async def process_seo(message: types.Message, state: FSMContext):
     )
 
     try:
-        loop = asyncio.get_running_loop()
         response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=f"Generate SEO for beat: {message.text}",
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.7
-                    )
-                )
+            client.chat.completions.create(
+                model=GEMINI_MODEL,
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": f"Generate SEO for beat: {message.text}"}
+                ]
             ),
             timeout=30.0
         )
         
         increment_limit(user_id, "seo")
         await state.clear()
-        await message.answer(response.text)
+        await message.answer(response.choices[0].message.content)
 
     except asyncio.TimeoutError:
         await state.clear()
-        await message.answer("⚠️ Сервер Gemini не ответил вовремя. Попробуй ещё раз чуть позже!")
+        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!")
     except Exception as e:
         await state.clear()
-        await message.answer(f"⚠️ Ошибка Gemini API: {str(e)}")
+        await message.answer(f"⚠️ Ошибка генерации: {str(e)}")
 
-
-# --- РАЗБОР КОНКУРЕНТА ---
+# --- РАЗБОР КОНКУРЕНТА ЧЕРЕЗ GEMINI ---
 @dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
 async def start_parser(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -504,44 +501,39 @@ async def process_parser(message: types.Message, state: FSMContext):
 
     parser_instruction = (
         "You are an expert YouTube competitor analyst for beatmakers.\n"
-        "Analyze the provided competitor video title, link, or topic and provide a structured breakdown:\n"
+        "Analyze the competitor video title, link, or topic and provide a structured breakdown:\n"
         "1. Estimated style and sub-genre\n"
-        "2. Why this title/SEO works well\n"
+        "2. Why this title/SEO works well on YouTube algorithms\n"
         "3. Recommended optimized tags inspired by this competitor style (15-20 tags).\n"
         "Keep it professional and concise in English."
     )
 
     try:
-        loop = asyncio.get_running_loop()
         response = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
-                lambda: gemini_client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=f"Analyze this competitor: {message.text}",
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=parser_instruction,
-                        temperature=0.7
-                    )
-                )
+            client.chat.completions.create(
+                model=GEMINI_MODEL,
+                messages=[
+                    {"role": "system", "content": parser_instruction},
+                    {"role": "user", "content": f"Analyze this competitor: {message.text}"}
+                ]
             ),
             timeout=30.0
         )
         
         increment_limit(user_id, "parser")
         await state.clear()
-        await message.answer(response.text)
+        await message.answer(response.choices[0].message.content)
 
     except asyncio.TimeoutError:
         await state.clear()
-        await message.answer("⚠️ Сервер Gemini не ответил вовремя. Попробуй ещё раз чуть позже!")
+        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!")
     except Exception as e:
         await state.clear()
-        await message.answer(f"⚠️ Ошибка Gemini API: {str(e)}")
+        await message.answer(f"⚠️ Ошибка анализа: {str(e)}")
 
 # --- СЕРВЕР RENDER ---
 async def handle(request):
-    return web.Response(text="Bot is online!")
+    return web.Response(text="Bot is running smoothly!")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -553,7 +545,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with Competitor Analyzer and Python 3.11 support!")
+    print("🚀 Bot launched with Gemini and Competitor Analyzer!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
