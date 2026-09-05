@@ -21,7 +21,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
-# ID администратора (полный безлимит)
+# ID администратора (полный безлимит и обход проверок)
 ADMIN_IDS = [7742046461]
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
@@ -36,12 +36,12 @@ PLANS = {
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Подключение Gemini через скоростной шлюз OpenRouter
+# Подключение Gemini через OpenRouter
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
 )
-GEMINI_MODEL = "google/gemini-2.5-flash"  # Официальная сверхбыстрая модель Gemini 2.5
+GEMINI_MODEL = "google/gemini-2.5-flash"
 
 # --- БАЗА ДАННЫХ ---
 def init_db():
@@ -140,7 +140,7 @@ TEXTS = {
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Отправь ссылку или название трека конкурента для разбора:",
+        "ask_competitor_url": "🔗 Отправь ссылку или название видео конкурента для разбора:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
@@ -148,7 +148,7 @@ TEXTS = {
         "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Gemini генерирует ответ...",
-        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к SEO-инструментам для ваших битов.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
@@ -168,7 +168,7 @@ TEXTS = {
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
         "generating": "🤖 Gemini is generating output...",
-        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
+        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI tools for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
         "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
     }
@@ -207,7 +207,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
 async def reset_cmd(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
         reset_user_limits(message.from_user.id)
-        await message.answer("🔄 Ваши лимиты сброшены до 0 (аккаунт как новый).")
+        await message.answer("🔄 Ваши лимиты сброшены до 0.")
 
 @dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
 async def lang_menu(message: types.Message):
@@ -441,7 +441,8 @@ async def process_seo(message: types.Message, state: FSMContext):
                 messages=[
                     {"role": "system", "content": system_instruction},
                     {"role": "user", "content": f"Generate SEO for beat: {message.text}"}
-                ]
+                ],
+                max_tokens=1000
             ),
             timeout=30.0
         )
@@ -515,7 +516,8 @@ async def process_parser(message: types.Message, state: FSMContext):
                 messages=[
                     {"role": "system", "content": parser_instruction},
                     {"role": "user", "content": f"Analyze this competitor: {message.text}"}
-                ]
+                ],
+                max_tokens=1000
             ),
             timeout=30.0
         )
@@ -545,7 +547,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with Gemini and Competitor Analyzer!")
+    print("🚀 Bot launched with Gemini, Token limits and Competitor Analyzer!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
