@@ -21,7 +21,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
-# ID администратора (полный безлимит и обход проверок)
+# ID администраторов (для них действует автоматический обход проверок)
 ADMIN_IDS = [7742046461]
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
@@ -140,15 +140,15 @@ TEXTS = {
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Отправь ссылку или название видео конкурента для разбора:",
+        "ask_competitor_url": "🔗 Отправь ссылку или название трека конкурента для разбора:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
         "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную генерацию.\nОформите подписку для продолжения работы.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную попытку.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Gemini генерирует ответ...",
-        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к SEO-инструментам для ваших битов.",
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
@@ -168,7 +168,7 @@ TEXTS = {
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
         "generating": "🤖 Gemini is generating output...",
-        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI tools for your beats.",
+        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
         "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
     }
@@ -203,11 +203,11 @@ async def start_cmd(message: types.Message, state: FSMContext):
     u = get_user(message.from_user.id)
     await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
 
+# Сброс лимитов (доступен для любого пользователя для быстрого тестирования)
 @dp.message(Command("reset"))
 async def reset_cmd(message: types.Message):
-    if message.from_user.id in ADMIN_IDS:
-        reset_user_limits(message.from_user.id)
-        await message.answer("🔄 Ваши лимиты сброшены до 0.")
+    reset_user_limits(message.from_user.id)
+    await message.answer("🔄 Все данные и лимиты текущего аккаунта сброшены до 0 (аккаунт как новый).")
 
 @dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
 async def lang_menu(message: types.Message):
@@ -225,6 +225,7 @@ async def set_language(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
 
+# --- ПРОВЕРКА ПОДПИСКИ ПО КНОПКЕ ---
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_handler(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -369,13 +370,14 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO ЧЕРЕЗ GEMINI ---
+# --- ГЕНЕРАЦИЯ SEO (ШАГИ ПРОВЕРКИ) ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
 
+    # 1. Сначала проверка каналов
     if not await is_subscribed_to_tg(user_id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
@@ -385,6 +387,7 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
+    # 2. Проверка лимитов (если подписка не оплачена и 1 бесплатная попытка уже исчерпана)
     if not is_user_subscribed(user_id) and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
@@ -392,6 +395,7 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
         return
 
+    # 3. Допуск к вводу данных
     await state.set_state(BotStates.waiting_for_seo_input)
     await message.answer(TEXTS[lang]["ask_seo_topic"])
 
@@ -458,7 +462,7 @@ async def process_seo(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(f"⚠️ Ошибка генерации: {str(e)}")
 
-# --- РАЗБОР КОНКУРЕНТА ЧЕРЕЗ GEMINI ---
+# --- РАЗБОР КОНКУРЕНТА ---
 @dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
 async def start_parser(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -547,7 +551,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with Gemini, Token limits and Competitor Analyzer!")
+    print("🚀 Bot launched with full feature set!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
