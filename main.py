@@ -2,6 +2,7 @@ import os
 import sqlite3
 import logging
 import asyncio
+from datetime import datetime, timedelta
 import aiohttp
 from dotenv import load_dotenv
 from aiohttp import web
@@ -14,17 +15,21 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery
 
-# Загрузка переменных окружения из .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
-PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA") # Токен ЮKassa из BotFather
+PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
 YT_CHANNEL_URL = "https://www.youtube.com/@prodblaes/videos"
-SUB_PRICE_RUB = 490 # Цена подписки в рублях
-SUB_PRICE_USD = 5   # Цена подписки в USD для CryptoBot
+
+# Тарифная сетка: дни, рубли, usd
+PLANS = {
+    "1m": {"name": "1 месяц", "days": 30, "price_rub": 390, "price_usd": 4},
+    "3m": {"name": "3 месяца", "days": 90, "price_rub": 890, "price_usd": 9},
+    "1y": {"name": "1 год", "days": 365, "price_rub": 2490, "price_usd": 25}
+}
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -44,7 +49,7 @@ def init_db():
             lang TEXT DEFAULT 'RU',
             seo_used INTEGER DEFAULT 0,
             parser_used INTEGER DEFAULT 0,
-            is_subscribed INTEGER DEFAULT 0
+            sub_until TEXT DEFAULT NULL
         )
     """)
     conn.commit()
@@ -53,21 +58,48 @@ def init_db():
 def get_user(user_id):
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    cursor.execute("SELECT lang, seo_used, parser_used, is_subscribed FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT lang, seo_used, parser_used, sub_until FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     if not row:
-        cursor.execute("INSERT INTO users (user_id, lang, seo_used, parser_used, is_subscribed) VALUES (?, 'RU', 0, 0, 0)", (user_id,))
+        cursor.execute("INSERT INTO users (user_id, lang, seo_used, parser_used, sub_until) VALUES (?, 'RU', 0, 0, NULL)", (user_id,))
         conn.commit()
-        row = ('RU', 0, 0, 0)
+        row = ('RU', 0, 0, None)
     conn.close()
-    return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "is_subscribed": row[3]}
+    return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "sub_until": row[3]}
 
-def set_premium(user_id):
+def is_user_subscribed(user_id):
+    u = get_user(user_id)
+    if not u["sub_until"]:
+        return False
+    try:
+        expire_date = datetime.strptime(u["sub_until"], "%Y-%m-%d %H:%M:%S")
+        return expire_date > datetime.now()
+    except Exception:
+        return False
+
+def add_subscription_days(user_id, days):
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET is_subscribed = 1 WHERE user_id = ?", (user_id,))
+    u = get_user(user_id)
+    now = datetime.now()
+    
+    if u["sub_until"]:
+        try:
+            current_expire = datetime.strptime(u["sub_until"], "%Y-%m-%d %H:%M:%S")
+            if current_expire > now:
+                new_expire = current_expire + timedelta(days=days)
+            else:
+                new_expire = now + timedelta(days=days)
+        except Exception:
+            new_expire = now + timedelta(days=days)
+    else:
+        new_expire = now + timedelta(days=days)
+
+    new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute("UPDATE users SET sub_until = ? WHERE user_id = ?", (new_expire_str, user_id))
     conn.commit()
     conn.close()
+    return new_expire_str
 
 def update_user_lang(user_id, lang):
     conn = sqlite3.connect("users.db")
@@ -88,7 +120,7 @@ def increment_limit(user_id, limit_type):
 
 init_db()
 
-# --- СЛОВАРЬ ЛОКАЛИЗАЦИИ ---
+# --- ЛОКАЛИЗАЦИЯ ---
 TEXTS = {
     "RU": {
         "welcome": "👋 Привет! Я AI-помощник для битмейкеров.\n\nВыбери нужную функцию:",
@@ -100,11 +132,12 @@ TEXTS = {
         "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию.\nОформите подписку для безлимитного доступа.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали 1 бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Генерирую SEO...",
-        "select_pay_method": "💳 Выберите удобный способ оплаты подписки:",
-        "pay_success": "🎉 Поздравляем! Безлимитный доступ успешно активирован."
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
+        "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
+        "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
     "EN": {
         "welcome": "👋 Hi! I am an AI assistant for beatmakers.\n\nChoose an option:",
@@ -116,11 +149,12 @@ TEXTS = {
         "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
-        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free limit.\nGet an unlimited subscription to continue.",
+        "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
         "generating": "🤖 Generating SEO...",
-        "select_pay_method": "💳 Choose a payment method for unlimited access:",
-        "pay_success": "🎉 Congratulations! Unlimited access is now active."
+        "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
+        "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
+        "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
     }
 }
 
@@ -134,7 +168,7 @@ def get_main_keyboard(lang):
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# --- ПРОВЕРКА ПОДПИСКИ НА ТГ КАНАЛ ---
+# --- ПРОВЕРКА ПОДПИСКИ TG ---
 async def is_subscribed_to_tg(user_id):
     try:
         member = await bot.get_chat_member(chat_id=f"@{TG_CHANNEL_USERNAME}", user_id=user_id)
@@ -142,15 +176,16 @@ async def is_subscribed_to_tg(user_id):
     except Exception:
         return False
 
-# --- API CRYPTOBOT ---
-async def create_crypto_invoice(user_id, amount_usd):
+# --- CRYPTOBOT API ---
+async def create_crypto_invoice(user_id, plan_key):
+    plan = PLANS[plan_key]
     url = "https://pay.crypt.bot/api/createInvoice"
     headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
     payload = {
         "asset": "USDT",
-        "amount": str(amount_usd),
-        "description": "Unlimited Beatmaker AI Access",
-        "payload": str(user_id)
+        "amount": str(plan["price_usd"]),
+        "description": f"Subscription {plan['name']} - Beatmaker SEO Bot",
+        "payload": f"{user_id}:{plan_key}"
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
@@ -167,10 +202,11 @@ async def check_crypto_invoice(invoice_id):
         async with session.post(url, json=payload, headers=headers) as resp:
             data = await resp.json()
             if data.get("ok") and len(data["result"]["items"]) > 0:
-                return data["result"]["items"][0]["status"] == "paid"
-            return False
+                item = data["result"]["items"][0]
+                return item["status"] == "paid", item.get("payload")
+            return False, None
 
-# --- ХЭНДЛЕРЫ ---
+# --- СТАРТ И ЯЗЫК ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -193,35 +229,62 @@ async def set_language(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
 
-# --- ВЫБОР И ОФОРМЛЕНИЕ ОПЛАТЫ ---
+# --- ШАГ 1: ВЫБОР ТАРИФА ---
 @dp.callback_query(F.data == "buy_subscription")
-async def show_payment_options(callback: types.CallbackQuery):
+async def show_plans_menu(callback: types.CallbackQuery):
     u = get_user(callback.from_user.id)
     lang = u["lang"]
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 СБП / Карта (ЮKassa)", callback_data="pay_yukassa")],
-        [InlineKeyboardButton(text="💎 Криптовалюта (CryptoBot)", callback_data="pay_crypto")]
+        [InlineKeyboardButton(text="🗓 1 месяц — 390 ₽ / $4", callback_data="plan_1m")],
+        [InlineKeyboardButton(text="🔥 3 месяца — 890 ₽ / $9", callback_data="plan_3m")],
+        [InlineKeyboardButton(text="💎 1 год — 2 490 ₽ / $25", callback_data="plan_1y")]
     ])
-    await callback.message.answer(TEXTS[lang]["select_pay_method"], reply_markup=kb)
+    await callback.message.answer(TEXTS[lang]["choose_plan"], reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-@dp.callback_query(F.data == "pay_yukassa")
-async def pay_yukassa_handler(callback: types.CallbackQuery):
+# --- ШАГ 2: ВЫБОР МЕТОДА ОПЛАТЫ ---
+@dp.callback_query(F.data.startswith("plan_"))
+async def show_methods_menu(callback: types.CallbackQuery):
+    plan_key = callback.data.split("_")[1]
+    plan = PLANS[plan_key]
+    u = get_user(callback.from_user.id)
+    lang = u["lang"]
+
+    text = TEXTS[lang]["choose_method"].format(
+        plan_name=plan["name"],
+        price_rub=plan["price_rub"],
+        price_usd=plan["price_usd"]
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 СБП / Карта (ЮKassa)", callback_data=f"pay_sbp_{plan_key}")],
+        [InlineKeyboardButton(text="💎 CryptoBot (USDT / TON)", callback_data=f"pay_crypto_{plan_key}")],
+        [InlineKeyboardButton(text="◀️ Назад к тарифам", callback_data="buy_subscription")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+# --- ОБРАБОТЧИКИ ОПЛАТЫ ---
+@dp.callback_query(F.data.startswith("pay_sbp_"))
+async def pay_sbp_handler(callback: types.CallbackQuery):
+    plan_key = callback.data.split("_")[2]
+    plan = PLANS[plan_key]
+
     if not PROVIDER_TOKEN_YUKASSA:
-        await callback.answer("⚠️ Токен ЮKassa еще не подключен в BotFather.", show_alert=True)
+        await callback.answer("⚠️ ЮKassa еще не активирована в BotFather.", show_alert=True)
         return
 
-    prices = [LabeledPrice(label="Безлимитная подписка", amount=SUB_PRICE_RUB * 100)]
+    prices = [LabeledPrice(label=f"Подписка {plan['name']}", amount=plan["price_rub"] * 100)]
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Безлимитная подписка",
-        description="Пожизненный доступ к генерации SEO.",
+        title=f"Подписка на {plan['name']}",
+        description=f"Неограниченный доступ к AI SEO генератору на {plan['days']} дней.",
         provider_token=PROVIDER_TOKEN_YUKASSA,
         currency="RUB",
         prices=prices,
-        start_parameter="unlimited_sub",
-        payload=f"sub_{callback.from_user.id}"
+        start_parameter=f"sub_{plan_key}",
+        payload=f"{callback.from_user.id}:{plan_key}"
     )
     await callback.answer()
 
@@ -231,35 +294,41 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: types.Message):
-    set_premium(message.from_user.id)
-    u = get_user(message.from_user.id)
-    await message.answer(TEXTS[u["lang"]]["pay_success"])
+    user_id, plan_key = message.successful_payment.invoice_payload.split(":")
+    plan = PLANS[plan_key]
+    until_str = add_subscription_days(int(user_id), plan["days"])
+    u = get_user(int(user_id))
+    await message.answer(TEXTS[u["lang"]]["pay_success"].format(until=until_str), parse_mode="Markdown")
 
-@dp.callback_query(F.data == "pay_crypto")
+@dp.callback_query(F.data.startswith("pay_crypto_"))
 async def pay_crypto_handler(callback: types.CallbackQuery):
-    invoice_url, invoice_id = await create_crypto_invoice(callback.from_user.id, SUB_PRICE_USD)
+    plan_key = callback.data.split("_")[2]
+    invoice_url, invoice_id = await create_crypto_invoice(callback.from_user.id, plan_key)
+    
     if invoice_url:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔗 Оплатить через CryptoBot", url=invoice_url)],
-            [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check_pay_{invoice_id}")]
+            [InlineKeyboardButton(text="🔗 Перейти к оплате в CryptoBot", url=invoice_url)],
+            [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"chk_crypto_{invoice_id}")]
         ])
-        await callback.message.answer("Оплатите счет через CryptoBot и нажмите «Проверить оплату»:", reply_markup=kb)
+        await callback.message.answer("Оплатите счет в CryptoBot и нажмите кнопку проверки:", reply_markup=kb)
     else:
-        await callback.answer("⚠️ Ошибка создания счета. Проверьте настройки CryptoBot.", show_alert=True)
+        await callback.answer("⚠️ Не удалось создать счет CryptoBot.", show_alert=True)
     await callback.answer()
 
-@dp.callback_query(F.data.startswith("check_pay_"))
-async def check_crypto_pay_handler(callback: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("chk_crypto_"))
+async def check_crypto_callback(callback: types.CallbackQuery):
     invoice_id = callback.data.split("_")[2]
-    is_paid = await check_crypto_invoice(invoice_id)
-    
-    if is_paid:
-        set_premium(callback.from_user.id)
-        u = get_user(callback.from_user.id)
-        await callback.message.answer(TEXTS[u["lang"]]["pay_success"])
+    is_paid, payload = await check_crypto_invoice(invoice_id)
+
+    if is_paid and payload:
+        user_id_str, plan_key = payload.split(":")
+        plan = PLANS[plan_key]
+        until_str = add_subscription_days(int(user_id_str), plan["days"])
+        u = get_user(int(user_id_str))
+        await callback.message.answer(TEXTS[u["lang"]]["pay_success"].format(until=until_str), parse_mode="Markdown")
         await callback.message.delete()
     else:
-        await callback.answer("❌ Оплата еще не прошла. Выполните платеж и повторите попытку.", show_alert=True)
+        await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
 # --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
@@ -277,7 +346,7 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    if u["is_subscribed"] == 0 and u["seo_used"] >= 1:
+    if not is_user_subscribed(user_id) and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
         ])
@@ -293,7 +362,7 @@ async def process_seo(message: types.Message, state: FSMContext):
     u = get_user(user_id)
     lang = u["lang"]
 
-    if u["is_subscribed"] == 0 and u["seo_used"] >= 1:
+    if not is_user_subscribed(user_id) and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
         ])
@@ -349,9 +418,9 @@ async def process_seo(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(f"⚠️ Ошибка: {str(e)}")
 
-# --- ВЕБ-СЕРВЕР DUMMY DOCKER ---
+# --- СЕРВЕР RENDER ---
 async def handle(request):
-    return web.Response(text="Bot is running!")
+    return web.Response(text="Bot is online!")
 
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -363,7 +432,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launcher active!")
+    print("🚀 Bot started with Subscription plans and Multi-Payments!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
