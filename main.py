@@ -24,7 +24,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 
-# База данных PostgreSQL (если указан DATABASE_URL) или локальный SQLite
+# База данных: PostgreSQL на Render (если указан DATABASE_URL) или локальный SQLite
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Параметры официального API ЮKassa
@@ -56,13 +56,11 @@ GEMINI_MODEL = "google/gemini-2.5-flash"
 # --- БАЗА ДАННЫХ (POSTGRESQL / SQLITE) ---
 def get_db_connection():
     if DATABASE_URL:
-        # Для PostgreSQL на Render
         url = DATABASE_URL
         if url.startswith("postgres://"):
             url = url.replace("postgres://", "postgresql://", 1)
         return psycopg2.connect(url)
     else:
-        # Локально на компьютере
         return sqlite3.connect("users.db")
 
 def init_db():
@@ -84,7 +82,6 @@ def init_db():
 def get_user(user_id):
     conn = get_db_connection()
     cursor = conn.cursor()
-    
     param_char = "%s" if DATABASE_URL else "?"
     cursor.execute(f"SELECT lang, seo_used, parser_used, sub_until FROM users WHERE user_id = {param_char}", (user_id,))
     row = cursor.fetchone()
@@ -168,7 +165,7 @@ def increment_limit(user_id, limit_type):
 
 init_db()
 
-# --- ТЕКСТЫ ---
+# --- СЛОВАРЬ ЛОКАЛИЗАЦИИ ---
 TEXTS = {
     "RU": {
         "welcome": "👋 Привет! Я AI-помощник для битмейкеров на базе Google Gemini.\n\nВыбери нужную функцию:",
@@ -177,16 +174,16 @@ TEXTS = {
         "change_lang": "🌐 Язык / Language",
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
-        "ask_seo_topic": "✍️ Напиши название и жанр бита (например: 'Drake type beat, Drake, Travis Scott'):",
-        "ask_competitor_url": "🔗 Отправь ссылку или название трека конкурента для разбора:",
+        "ask_seo_topic": "✍️ Напиши название и артистов/стиль бита (например: 'Drake x Travis Scott type beat, dark trap'):",
+        "ask_competitor_url": "🔗 Отправь название трека или ссылку конкурента для разбора:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
         "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную попытку.\nОформите подписку для продолжения работы.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
-        "generating": "🤖 Gemini генерирует ответ...",
-        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и разбору треков.",
+        "generating": "🤖 Gemini генерирует топовое SEO...",
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации вирусных описаний и тегов для ваших битов.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}",
         "cancel_btn": "❌ Отмена",
@@ -199,7 +196,7 @@ TEXTS = {
         "change_lang": "🌐 Language / Язык",
         "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
-        "ask_seo_topic": "✍️ Enter the title and genre of the beat (e.g., 'Drake type beat, Drake, Travis Scott'):",
+        "ask_seo_topic": "✍️ Enter the title and artists/style (e.g., 'Drake x Travis Scott type beat, dark trap'):",
         "ask_competitor_url": "🔗 Send competitor video title or link for analysis:",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
@@ -207,7 +204,7 @@ TEXTS = {
         "sub_fail_alert": "❌ Channel subscription not found. Please subscribe first!",
         "limit_reached": "🔒 **Free limit reached!**\n\nYou have used your free generation limit.\nGet a subscription to continue.",
         "buy_sub_btn": "⭐ Subscribe Now",
-        "generating": "🤖 Gemini is generating output...",
+        "generating": "🤖 Gemini is generating top-tier SEO...",
         "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
         "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}",
@@ -302,7 +299,7 @@ async def check_sub_handler(callback: types.CallbackQuery):
     else:
         await callback.answer(TEXTS[lang]["sub_fail_alert"], show_alert=True)
 
-# --- ПЛАТЕЖИ: ЮKASSA ---
+# --- ПЛАТЕЖИ: ОФИЦИАЛЬНАЯ СТРАНИЦА ЮKASSA (СБП, КАРТЫ, T-PAY) ---
 async def create_yookassa_payment(user_id, plan_key):
     plan = PLANS[plan_key]
     url = "https://api.yookassa.ru/v3/payments"
@@ -435,7 +432,7 @@ async def pay_yookassa_handler(callback: types.CallbackQuery):
         await callback.message.answer(
             f"Оплата тарифа **{plan['name']}** на сумму **{plan['price_rub']} ₽**.\n\n"
             "Нажмите кнопку ниже, выберите СБП или свой банк и подтвердите платёж. "
-            "После возвращения нажмите кнопку «Проверить оплату».",
+            "После оплаты вернитесь в бот и нажмите «Проверить оплату».",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -489,7 +486,7 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO ---
+# --- ГЕНЕРАЦИЯ SEO (ТОПОВЫЙ ПРОМПТ) ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     await state.clear()
@@ -533,26 +530,32 @@ async def process_seo(message: types.Message, state: FSMContext):
     await message.answer(TEXTS[lang]["generating"])
 
     system_instruction = (
-        "You are an expert YouTube SEO generator specialized for beatmakers.\n"
-        "Generate SEO text STRICTLY in English following the exact structure below.\n\n"
-        "RULES:\n"
-        "1. Create ONE consistent beat name. It must be identical in Title and the first line of Description.\n"
-        "2. Do NOT output any intro, greetings, commentary, or advice.\n"
-        "3. Follow this EXACT format:\n\n"
-        "Title: [FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
+        "You are an elite YouTube SEO generator specializing in high-ranking type beat videos for producers and beatmakers.\n"
+        "Generate a complete, ready-to-copy YouTube SEO pack STRICTLY in English based on the user's beat info.\n\n"
+        "FORMATTING RULES:\n"
+        "1. Create ONE cohesive, catchy beat title if not provided by user.\n"
+        "2. If BPM or Key are not specified, generate realistic values for the chosen genre/artist.\n"
+        "3. Output MUST follow this EXACT structure without any extra conversational text or intro:\n\n"
+        "Title:\n"
+        "[FREE] [Artist] Type Beat 2026 - '[Beat Name]' | Rap/Trap Instrumental\n\n"
         "Description:\n"
-        "[FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
-        "INSTAGRAM: [your instagram]\n\n"
-        "MAIL: [your mail]\n\n"
-        "BPM: [BPM]\n"
-        "KEY: [Key]\n\n"
-        "FREE FOR NON PROFIT USE, FOR COMMERCIAL USE PLEASE PURCHASE A LEASE. ANYONE WHO RELEASES A SONG WITHOUT A LEASE WILL BE HIT WITH COPYRIGHT.\n\n"
-        "FREE ONLY FOR SOUNDCLOUD (prod. [your name])\n\n"
-        "Dont forget to like & subscribe,\n\n"
-        "[15-20 relevant comma-separated SEO tags for the beat style]\n\n"
-        "Tags:\n"
-        "[Same tags as a comma-separated list]\n\n"
-        "4. If BPM or Key is not specified by the user, invent suitable values for the genre."
+        "#[Artist]TypeBeat #TypeBeat2026 #[Genre]TypeBeat\n\n"
+        "🛒 Purchase / Download Untagged: https://bsta.rs/yourlink\n"
+        "🌐 Website: https://yourbeatstars.com\n\n"
+        "(FREE) [Artist] Type Beat 2026 - '[Beat Name]'\n"
+        "🎹 BPM: [BPM] | Key: [Key]\n\n"
+        "Free for non-profit / non-commercial use only (SoundCloud / YouTube without monetization).\n"
+        "MUST CREDIT IN TITLE: (prod. [Your Name])\n\n"
+        "For commercial licensing, leases, or exclusive rights, please visit the store or contact:\n"
+        "📩 Email: yourbusiness@gmail.com\n"
+        "📸 Instagram: @yourproducer\n\n"
+        "------------------------------------\n"
+        "Dont forget to Like, Comment and Subscribe for more daily beats!\n\n"
+        "Tags (Copy into YouTube Studio Tags Box - comma separated, high-ranking, within 500 chars):\n"
+        "[Artist] type beat, [Artist] type beat 2026, free [Artist] type beat, [Artist] instrumental, "
+        "type beat, type beat 2026, free type beat 2026, rap beat 2026, trap instrumental, "
+        "[Genre] type beat, free type beats, hard trap beat, rap instrumental, [Related Artist] type beat, "
+        "type beat free, freestyle beat, beat instrumental"
     )
 
     try:
@@ -655,7 +658,7 @@ async def process_parser(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(f"⚠️ Ошибка анализа: {str(e)}", reply_markup=get_main_keyboard(lang))
 
-# --- СЕРВЕР RENDER ---
+# --- ВЕБ-СЕРВЕР ДЛЯ RENDER ---
 async def handle(request):
     return web.Response(text="Bot is running smoothly!")
 
@@ -669,7 +672,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with PostgreSQL / SQLite support!")
+    print("🚀 Bot launched with Elite SEO prompt, SBP YooKassa & PostgreSQL support!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
