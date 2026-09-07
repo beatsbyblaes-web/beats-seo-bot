@@ -1,5 +1,5 @@
 import os
-import json
+import uuid
 import sqlite3
 import logging
 import asyncio
@@ -14,15 +14,18 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
-PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
-# ID администратора (обход лимитов)
+# Параметры официального API ЮKassa
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "1455462")
+YOOKASSA_API_KEY = os.getenv("YOOKASSA_API_KEY")
+
+# ID администраторов
 ADMIN_IDS = [7742046461]
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
@@ -131,7 +134,7 @@ def increment_limit(user_id, limit_type):
 
 init_db()
 
-# --- СЛОВАРЬ ЛОКАЛИЗАЦИИ ---
+# --- ТЕКСТЫ ---
 TEXTS = {
     "RU": {
         "welcome": "👋 Привет! Я AI-помощник для битмейкеров на базе Google Gemini.\n\nВыбери нужную функцию:",
@@ -146,10 +149,10 @@ TEXTS = {
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
         "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную генерацию.\nОформите подписку для продолжения работы.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную попытку.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Gemini генерирует ответ...",
-        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
+        "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и разбору треков.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
         "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
     },
@@ -197,7 +200,7 @@ async def is_subscribed_to_tg(user_id):
         logging.error(f"Error checking sub: {e}")
         return False
 
-# --- ХЭНДЛЕРЫ МЕНЮ ---
+# --- ХЭНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -207,7 +210,7 @@ async def start_cmd(message: types.Message, state: FSMContext):
 @dp.message(Command("reset"))
 async def reset_cmd(message: types.Message):
     reset_user_limits(message.from_user.id)
-    await message.answer("🔄 Все данные и лимиты текущего аккаунта сброшены до 0 (аккаунт как новый).")
+    await message.answer("🔄 Все данные и лимиты текущего аккаунта сброшены до 0.")
 
 @dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
 async def lang_menu(message: types.Message):
@@ -241,106 +244,54 @@ async def check_sub_handler(callback: types.CallbackQuery):
     else:
         await callback.answer(TEXTS[lang]["sub_fail_alert"], show_alert=True)
 
-# --- ПЛАТЕЖИ: МЕНЮ ВЫБОРА ---
-@dp.callback_query(F.data == "buy_subscription")
-async def show_plans_menu(callback: types.CallbackQuery):
-    u = get_user(callback.from_user.id)
-    lang = u["lang"]
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🗓 1 месяц — 390 ₽ / $4", callback_data="plan_1m")],
-        [InlineKeyboardButton(text="🔥 3 месяца — 890 ₽ / $9", callback_data="plan_3m")],
-        [InlineKeyboardButton(text="💎 1 год — 2 490 ₽ / $25", callback_data="plan_1y")]
-    ])
-    await callback.message.answer(TEXTS[lang]["choose_plan"], reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("plan_"))
-async def show_methods_menu(callback: types.CallbackQuery):
-    plan_key = callback.data.split("_")[1]
+# --- ПЛАТЕЖИ ЧЕРЕЗ ОФИЦИАЛЬНЫЙ API ЮKASSA (СБП, КАРТЫ, T-PAY) ---
+async def create_yookassa_payment(user_id, plan_key):
     plan = PLANS[plan_key]
-    u = get_user(callback.from_user.id)
-    lang = u["lang"]
+    url = "https://api.yookassa.ru/v3/payments"
+    auth = aiohttp.BasicAuth(str(YOOKASSA_SHOP_ID), str(YOOKASSA_API_KEY))
+    idempotence_key = str(uuid.uuid4())
+    headers = {"Idempotence-Key": idempotence_key, "Content-Type": "application/json"}
 
-    text = TEXTS[lang]["choose_method"].format(
-        plan_name=plan["name"],
-        price_rub=plan["price_rub"],
-        price_usd=plan["price_usd"]
-    )
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 СБП / Карта (ЮKassa)", callback_data=f"pay_sbp_{plan_key}")],
-        [InlineKeyboardButton(text="💎 CryptoBot (USDT / TON)", callback_data=f"pay_crypto_{plan_key}")],
-        [InlineKeyboardButton(text="◀️ Назад к тарифам", callback_data="buy_subscription")]
-    ])
-    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
-    await callback.answer()
-
-# --- ПЛАТЕЖИ: ЮKASSA (СБП / КАРТА С ФИСКАЛИЗАЦИЕЙ 54-ФЗ) ---
-@dp.callback_query(F.data.startswith("pay_sbp_"))
-async def pay_sbp_handler(callback: types.CallbackQuery):
-    plan_key = callback.data.split("_")[2]
-    plan = PLANS[plan_key]
-
-    if not PROVIDER_TOKEN_YUKASSA:
-        await callback.answer("⚠️ ЮKassa еще не активирована.", show_alert=True)
-        return
-
-    prices = [LabeledPrice(label=f"Подписка {plan['name']}", amount=plan["price_rub"] * 100)]
-    
-    # Фискальный чек для ЮKassa
-    receipt_data = {
-        "receipt": {
-            "items": [
-                {
-                    "description": f"Подписка {plan['name']} (доступ к сервису)",
-                    "quantity": "1.00",
-                    "amount": {
-                        "value": f"{plan['price_rub']}.00",
-                        "currency": "RUB"
-                    },
-                    "vat_code": 1,
-                    "payment_mode": "full_prepayment",
-                    "payment_subject": "service"
-                }
-            ]
+    bot_user = await bot.get_me()
+    payload = {
+        "amount": {
+            "value": f"{plan['price_rub']}.00",
+            "currency": "RUB"
+        },
+        "confirmation": {
+            "type": "redirect",
+            "return_url": f"https://t.me/{bot_user.username}"
+        },
+        "capture": True,
+        "description": f"Подписка {plan['name']} - BeatsBoost",
+        "metadata": {
+            "user_id": str(user_id),
+            "plan_key": plan_key
         }
     }
 
-    try:
-        await bot.send_invoice(
-            chat_id=callback.from_user.id,
-            title=f"Подписка на {plan['name']}",
-            description=f"Неограниченный доступ к AI SEO генератору на {plan['days']} дней.",
-            provider_token=PROVIDER_TOKEN_YUKASSA,
-            currency="RUB",
-            prices=prices,
-            start_parameter=f"sub_{plan_key}",
-            payload=f"{callback.from_user.id}:{plan_key}",
-            need_email=True,
-            send_email_to_provider=True,
-            provider_data=json.dumps(receipt_data)
-        )
-    except Exception as e:
-        logging.error(f"Error sending YooKassa invoice: {e}")
-        await callback.message.answer(f"⚠️ Ошибка создания счёта: {e}")
-    await callback.answer()
+    async with aiohttp.ClientSession(auth=auth) as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if resp.status == 200:
+                payment_url = data["confirmation"]["confirmation_url"]
+                payment_id = data["id"]
+                return payment_url, payment_id
+            else:
+                logging.error(f"YooKassa error: {data}")
+                return None, None
 
-@dp.pre_checkout_query()
-async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    try:
-        await pre_checkout_query.answer(ok=True)
-    except Exception as e:
-        logging.error(f"Error answering pre_checkout_query: {e}")
-        await pre_checkout_query.answer(ok=False, error_message="Ошибка при подтверждении. Попробуйте еще раз.")
+async def check_yookassa_payment(payment_id):
+    url = f"https://api.yookassa.ru/v3/payments/{payment_id}"
+    auth = aiohttp.BasicAuth(str(YOOKASSA_SHOP_ID), str(YOOKASSA_API_KEY))
 
-@dp.message(F.successful_payment)
-async def successful_payment_handler(message: types.Message):
-    user_id, plan_key = message.successful_payment.invoice_payload.split(":")
-    plan = PLANS[plan_key]
-    until_str = add_subscription_days(int(user_id), plan["days"])
-    u = get_user(int(user_id))
-    await message.answer(TEXTS[u["lang"]]["pay_success"].format(until=until_str), parse_mode="Markdown")
+    async with aiohttp.ClientSession(auth=auth) as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                is_paid = data["status"] == "succeeded"
+                return is_paid, data.get("metadata", {})
+            return False, {}
 
 # --- ПЛАТЕЖИ: CRYPTOBOT ---
 async def create_crypto_invoice(user_id, plan_key):
@@ -372,6 +323,86 @@ async def check_crypto_invoice(invoice_id):
                 return item["status"] == "paid", item.get("payload")
             return False, None
 
+# --- МЕНЮ ТАРИФОВ И ОПЛАТЫ ---
+@dp.callback_query(F.data == "buy_subscription")
+async def show_plans_menu(callback: types.CallbackQuery):
+    u = get_user(callback.from_user.id)
+    lang = u["lang"]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗓 1 месяц — 390 ₽ / $4", callback_data="plan_1m")],
+        [InlineKeyboardButton(text="🔥 3 месяца — 890 ₽ / $9", callback_data="plan_3m")],
+        [InlineKeyboardButton(text="💎 1 год — 2 490 ₽ / $25", callback_data="plan_1y")]
+    ])
+    await callback.message.answer(TEXTS[lang]["choose_plan"], reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("plan_"))
+async def show_methods_menu(callback: types.CallbackQuery):
+    plan_key = callback.data.split("_")[1]
+    plan = PLANS[plan_key]
+    u = get_user(callback.from_user.id)
+    lang = u["lang"]
+
+    text = TEXTS[lang]["choose_method"].format(
+        plan_name=plan["name"],
+        price_rub=plan["price_rub"],
+        price_usd=plan["price_usd"]
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 СБП / Карты / T-Pay (ЮKassa)", callback_data=f"pay_yk_{plan_key}")],
+        [InlineKeyboardButton(text="💎 CryptoBot (USDT / TON)", callback_data=f"pay_crypto_{plan_key}")],
+        [InlineKeyboardButton(text="◀️ Назад к тарифам", callback_data="buy_subscription")]
+    ])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    await callback.answer()
+
+# Обработка выбора ЮKassa
+@dp.callback_query(F.data.startswith("pay_yk_"))
+async def pay_yookassa_handler(callback: types.CallbackQuery):
+    plan_key = callback.data.split("_")[2]
+    plan = PLANS[plan_key]
+
+    if not YOOKASSA_API_KEY:
+        await callback.answer("⚠️ ЮKassa API ключ ещё не добавлен на сервере!", show_alert=True)
+        return
+
+    payment_url, payment_id = await create_yookassa_payment(callback.from_user.id, plan_key)
+
+    if payment_url:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔗 Перейти к оплате (СБП / Карта)", url=payment_url)],
+            [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"chk_yk_{payment_id}")]
+        ])
+        await callback.message.answer(
+            f"Оплата тарифа **{plan['name']}** на сумму **{plan['price_rub']} ₽**.\n\n"
+            "Нажмите кнопку ниже, выберите СБП или свой банк и подтвердите платёж. "
+            "После возвращения нажмите кнопку «Проверить оплату».",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    else:
+        await callback.answer("⚠️ Ошибка создания платежа в ЮKassa.", show_alert=True)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("chk_yk_"))
+async def check_yk_callback(callback: types.CallbackQuery):
+    payment_id = callback.data.split("_")[2]
+    is_paid, metadata = await check_yookassa_payment(payment_id)
+
+    if is_paid and metadata:
+        user_id = int(metadata["user_id"])
+        plan_key = metadata["plan_key"]
+        plan = PLANS[plan_key]
+        until_str = add_subscription_days(user_id, plan["days"])
+        u = get_user(user_id)
+        await callback.message.answer(TEXTS[u["lang"]]["pay_success"].format(until=until_str), parse_mode="Markdown")
+        await callback.message.delete()
+    else:
+        await callback.answer("❌ Платёж ещё не подтверждён банком. Попробуйте через пару секунд!", show_alert=True)
+
+# Обработка выбора CryptoBot
 @dp.callback_query(F.data.startswith("pay_crypto_"))
 async def pay_crypto_handler(callback: types.CallbackQuery):
     plan_key = callback.data.split("_")[2]
@@ -580,7 +611,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with YooKassa 54-FZ fiscal receipt fix!")
+    print("🚀 Bot launched with Native YooKassa SBP Web-checkout!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
