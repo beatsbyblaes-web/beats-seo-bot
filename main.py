@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 from aiohttp import web
 from openai import AsyncOpenAI
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -20,6 +23,9 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
+
+# База данных PostgreSQL (если указан DATABASE_URL) или локальный SQLite
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Параметры официального API ЮKassa
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "1455462")
@@ -47,13 +53,24 @@ client = AsyncOpenAI(
 )
 GEMINI_MODEL = "google/gemini-2.5-flash"
 
-# --- БАЗА ДАННЫХ ---
+# --- БАЗА ДАННЫХ (POSTGRESQL / SQLITE) ---
+def get_db_connection():
+    if DATABASE_URL:
+        # Для PostgreSQL на Render
+        url = DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(url)
+    else:
+        # Локально на компьютере
+        return sqlite3.connect("users.db")
+
 def init_db():
-    conn = sqlite3.connect("users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
+            user_id BIGINT PRIMARY KEY,
             lang TEXT DEFAULT 'RU',
             seo_used INTEGER DEFAULT 0,
             parser_used INTEGER DEFAULT 0,
@@ -61,25 +78,36 @@ def init_db():
         )
     """)
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_user(user_id):
-    conn = sqlite3.connect("users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT lang, seo_used, parser_used, sub_until FROM users WHERE user_id = ?", (user_id,))
+    
+    param_char = "%s" if DATABASE_URL else "?"
+    cursor.execute(f"SELECT lang, seo_used, parser_used, sub_until FROM users WHERE user_id = {param_char}", (user_id,))
     row = cursor.fetchone()
+    
     if not row:
-        cursor.execute("INSERT INTO users (user_id, lang, seo_used, parser_used, sub_until) VALUES (?, 'RU', 0, 0, NULL)", (user_id,))
+        cursor.execute(
+            f"INSERT INTO users (user_id, lang, seo_used, parser_used, sub_until) VALUES ({param_char}, 'RU', 0, 0, NULL)",
+            (user_id,)
+        )
         conn.commit()
         row = ('RU', 0, 0, None)
+        
+    cursor.close()
     conn.close()
     return {"lang": row[0], "seo_used": row[1], "parser_used": row[2], "sub_until": row[3]}
 
 def reset_user_limits(user_id):
-    conn = sqlite3.connect("users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET seo_used = 0, parser_used = 0, sub_until = NULL WHERE user_id = ?", (user_id,))
+    param_char = "%s" if DATABASE_URL else "?"
+    cursor.execute(f"UPDATE users SET seo_used = 0, parser_used = 0, sub_until = NULL WHERE user_id = {param_char}", (user_id,))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def is_user_subscribed(user_id):
@@ -95,8 +123,9 @@ def is_user_subscribed(user_id):
         return False
 
 def add_subscription_days(user_id, days):
-    conn = sqlite3.connect("users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
+    param_char = "%s" if DATABASE_URL else "?"
     u = get_user(user_id)
     now = datetime.now()
     
@@ -110,26 +139,31 @@ def add_subscription_days(user_id, days):
         new_expire = now + timedelta(days=days)
 
     new_expire_str = new_expire.strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("UPDATE users SET sub_until = ? WHERE user_id = ?", (new_expire_str, user_id))
+    cursor.execute(f"UPDATE users SET sub_until = {param_char} WHERE user_id = {param_char}", (new_expire_str, user_id))
     conn.commit()
+    cursor.close()
     conn.close()
     return new_expire_str
 
 def update_user_lang(user_id, lang):
-    conn = sqlite3.connect("users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET lang = ? WHERE user_id = ?", (lang, user_id))
+    param_char = "%s" if DATABASE_URL else "?"
+    cursor.execute(f"UPDATE users SET lang = {param_char} WHERE user_id = {param_char}", (lang, user_id))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def increment_limit(user_id, limit_type):
-    conn = sqlite3.connect("users.db")
+    conn = get_db_connection()
     cursor = conn.cursor()
+    param_char = "%s" if DATABASE_URL else "?"
     if limit_type == "seo":
-        cursor.execute("UPDATE users SET seo_used = seo_used + 1 WHERE user_id = ?", (user_id,))
+        cursor.execute(f"UPDATE users SET seo_used = seo_used + 1 WHERE user_id = {param_char}", (user_id,))
     elif limit_type == "parser":
-        cursor.execute("UPDATE users SET parser_used = parser_used + 1 WHERE user_id = ?", (user_id,))
+        cursor.execute(f"UPDATE users SET parser_used = parser_used + 1 WHERE user_id = {param_char}", (user_id,))
     conn.commit()
+    cursor.close()
     conn.close()
 
 init_db()
@@ -458,7 +492,7 @@ async def check_crypto_callback(callback: types.CallbackQuery):
 # --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
-    await state.clear()  # Сбрасываем любые предыдущие состояния!
+    await state.clear()
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
@@ -548,7 +582,7 @@ async def process_seo(message: types.Message, state: FSMContext):
 # --- РАЗБОР КОНКУРЕНТА ---
 @dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
 async def start_parser(message: types.Message, state: FSMContext):
-    await state.clear()  # Сбрасываем любые предыдущие состояния!
+    await state.clear()
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
@@ -635,7 +669,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with isolated states and cancel support!")
+    print("🚀 Bot launched with PostgreSQL / SQLite support!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
