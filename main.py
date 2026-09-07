@@ -154,7 +154,9 @@ TEXTS = {
         "generating": "🤖 Gemini генерирует ответ...",
         "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и разбору треков.",
         "choose_method": "💳 **Тариф:** {plan_name}\n**Сумма к оплате:** {price_rub} ₽ / ${price_usd}\n\nВыберите способ оплаты:",
-        "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}"
+        "pay_success": "🎉 **Оплата прошла успешно!**\nПодписка активна до: {until}",
+        "cancel_btn": "❌ Отмена",
+        "canceled": "Действие отменено."
     },
     "EN": {
         "welcome": "👋 Hi! I am a Gemini-powered AI assistant for beatmakers.\n\nChoose an option:",
@@ -174,9 +176,17 @@ TEXTS = {
         "generating": "🤖 Gemini is generating output...",
         "choose_plan": "🔥 **Choose your subscription plan:**\n\nGet unlimited access to AI YouTube SEO optimization for your beats.",
         "choose_method": "💳 **Plan:** {plan_name}\n**Price:** {price_rub} RUB / ${price_usd}\n\nSelect a payment method:",
-        "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}"
+        "pay_success": "🎉 **Payment successful!**\nSubscription active until: {until}",
+        "cancel_btn": "❌ Cancel",
+        "canceled": "Action canceled."
     }
 }
+
+MENU_BUTTONS = [
+    TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"],
+    TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"],
+    TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]
+]
 
 class BotStates(StatesGroup):
     waiting_for_seo_input = State()
@@ -190,6 +200,12 @@ def get_main_keyboard(lang):
     ]
     return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
+def get_cancel_keyboard(lang):
+    kb = [
+        [types.KeyboardButton(text=TEXTS[lang]["cancel_btn"])]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
 async def is_subscribed_to_tg(user_id):
     if user_id in ADMIN_IDS:
         return True
@@ -200,7 +216,7 @@ async def is_subscribed_to_tg(user_id):
         logging.error(f"Error checking sub: {e}")
         return False
 
-# --- ХЭНДЛЕРЫ ---
+# --- ХЭНДЛЕРЫ МЕНЮ И ОТМЕНЫ ---
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message, state: FSMContext):
     await state.clear()
@@ -208,12 +224,20 @@ async def start_cmd(message: types.Message, state: FSMContext):
     await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
 
 @dp.message(Command("reset"))
-async def reset_cmd(message: types.Message):
+async def reset_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
     reset_user_limits(message.from_user.id)
     await message.answer("🔄 Все данные и лимиты текущего аккаунта сброшены до 0.")
 
+@dp.message(F.text.in_([TEXTS["RU"]["cancel_btn"], TEXTS["EN"]["cancel_btn"]]))
+async def cancel_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    u = get_user(message.from_user.id)
+    await message.answer(TEXTS[u["lang"]]["canceled"], reply_markup=get_main_keyboard(u["lang"]))
+
 @dp.message(F.text.in_([TEXTS["RU"]["change_lang"], TEXTS["EN"]["change_lang"]]))
-async def lang_menu(message: types.Message):
+async def lang_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     u = get_user(message.from_user.id)
     inline_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_RU"),
@@ -244,7 +268,7 @@ async def check_sub_handler(callback: types.CallbackQuery):
     else:
         await callback.answer(TEXTS[lang]["sub_fail_alert"], show_alert=True)
 
-# --- ПЛАТЕЖИ ЧЕРЕЗ ОФИЦИАЛЬНЫЙ API ЮKASSA (СБП, КАРТЫ, T-PAY) ---
+# --- ПЛАТЕЖИ: ЮKASSA ---
 async def create_yookassa_payment(user_id, plan_key):
     plan = PLANS[plan_key]
     url = "https://api.yookassa.ru/v3/payments"
@@ -358,7 +382,6 @@ async def show_methods_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
-# Обработка выбора ЮKassa
 @dp.callback_query(F.data.startswith("pay_yk_"))
 async def pay_yookassa_handler(callback: types.CallbackQuery):
     plan_key = callback.data.split("_")[2]
@@ -402,7 +425,6 @@ async def check_yk_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платёж ещё не подтверждён банком. Попробуйте через пару секунд!", show_alert=True)
 
-# Обработка выбора CryptoBot
 @dp.callback_query(F.data.startswith("pay_crypto_"))
 async def pay_crypto_handler(callback: types.CallbackQuery):
     plan_key = callback.data.split("_")[2]
@@ -436,6 +458,7 @@ async def check_crypto_callback(callback: types.CallbackQuery):
 # --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
+    await state.clear()  # Сбрасываем любые предыдущие состояния!
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
@@ -457,9 +480,9 @@ async def start_seo(message: types.Message, state: FSMContext):
         return
 
     await state.set_state(BotStates.waiting_for_seo_input)
-    await message.answer(TEXTS[lang]["ask_seo_topic"])
+    await message.answer(TEXTS[lang]["ask_seo_topic"], reply_markup=get_cancel_keyboard(lang))
 
-@dp.message(BotStates.waiting_for_seo_input)
+@dp.message(BotStates.waiting_for_seo_input, ~F.text.in_(MENU_BUTTONS + [TEXTS["RU"]["cancel_btn"], TEXTS["EN"]["cancel_btn"]]))
 async def process_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
@@ -513,18 +536,19 @@ async def process_seo(message: types.Message, state: FSMContext):
         
         increment_limit(user_id, "seo")
         await state.clear()
-        await message.answer(response.choices[0].message.content)
+        await message.answer(response.choices[0].message.content, reply_markup=get_main_keyboard(lang))
 
     except asyncio.TimeoutError:
         await state.clear()
-        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!")
+        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!", reply_markup=get_main_keyboard(lang))
     except Exception as e:
         await state.clear()
-        await message.answer(f"⚠️ Ошибка генерации: {str(e)}")
+        await message.answer(f"⚠️ Ошибка генерации: {str(e)}", reply_markup=get_main_keyboard(lang))
 
 # --- РАЗБОР КОНКУРЕНТА ---
 @dp.message(F.text.in_([TEXTS["RU"]["parse_competitor"], TEXTS["EN"]["parse_competitor"]]))
 async def start_parser(message: types.Message, state: FSMContext):
+    await state.clear()  # Сбрасываем любые предыдущие состояния!
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
@@ -546,9 +570,9 @@ async def start_parser(message: types.Message, state: FSMContext):
         return
 
     await state.set_state(BotStates.waiting_for_competitor_input)
-    await message.answer(TEXTS[lang]["ask_competitor_url"])
+    await message.answer(TEXTS[lang]["ask_competitor_url"], reply_markup=get_cancel_keyboard(lang))
 
-@dp.message(BotStates.waiting_for_competitor_input)
+@dp.message(BotStates.waiting_for_competitor_input, ~F.text.in_(MENU_BUTTONS + [TEXTS["RU"]["cancel_btn"], TEXTS["EN"]["cancel_btn"]]))
 async def process_parser(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
@@ -588,14 +612,14 @@ async def process_parser(message: types.Message, state: FSMContext):
         
         increment_limit(user_id, "parser")
         await state.clear()
-        await message.answer(response.choices[0].message.content)
+        await message.answer(response.choices[0].message.content, reply_markup=get_main_keyboard(lang))
 
     except asyncio.TimeoutError:
         await state.clear()
-        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!")
+        await message.answer("⚠️ Сервер нейросети перегружен. Попробуй ещё раз чуть позже!", reply_markup=get_main_keyboard(lang))
     except Exception as e:
         await state.clear()
-        await message.answer(f"⚠️ Ошибка анализа: {str(e)}")
+        await message.answer(f"⚠️ Ошибка анализа: {str(e)}", reply_markup=get_main_keyboard(lang))
 
 # --- СЕРВЕР RENDER ---
 async def handle(request):
@@ -611,7 +635,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with Native YooKassa SBP Web-checkout!")
+    print("🚀 Bot launched with isolated states and cancel support!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
