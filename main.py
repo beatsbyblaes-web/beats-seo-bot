@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import logging
 import asyncio
@@ -21,7 +22,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
 PROVIDER_TOKEN_YUKASSA = os.getenv("PROVIDER_TOKEN_YUKASSA")
 
-# ID администраторов (для них действует автоматический обход проверок)
+# ID администратора (обход лимитов)
 ADMIN_IDS = [7742046461]
 
 TG_CHANNEL_USERNAME = "beatsbyblaes"
@@ -145,7 +146,7 @@ TEXTS = {
         "check_sub_btn": "✅ Проверить подписку",
         "sub_success_alert": "🎉 Спасибо за подписку! Доступ открыт.",
         "sub_fail_alert": "❌ Подписка на Telegram-канал не найдена. Подпишитесь и попробуйте снова!",
-        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную попытку.\nОформите подписку для продолжения работы.",
+        "limit_reached": "🔒 **Бесплатный лимит исчерпан!**\n\nВы уже использовали бесплатную генерацию.\nОформите подписку для продолжения работы.",
         "buy_sub_btn": "⭐ Оформить подписку",
         "generating": "🤖 Gemini генерирует ответ...",
         "choose_plan": "🔥 **Выберите тарифный план:**\n\nПолучите неограниченный доступ к генерации SEO описаний и тегов для ваших битов.",
@@ -203,7 +204,6 @@ async def start_cmd(message: types.Message, state: FSMContext):
     u = get_user(message.from_user.id)
     await message.answer(TEXTS[u["lang"]]["welcome"], reply_markup=get_main_keyboard(u["lang"]))
 
-# Сброс лимитов (доступен для любого пользователя для быстрого тестирования)
 @dp.message(Command("reset"))
 async def reset_cmd(message: types.Message):
     reset_user_limits(message.from_user.id)
@@ -225,7 +225,6 @@ async def set_language(callback: types.CallbackQuery):
     await callback.message.delete()
     await callback.message.answer(TEXTS[lang]["lang_changed"], reply_markup=get_main_keyboard(lang))
 
-# --- ПРОВЕРКА ПОДПИСКИ ПО КНОПКЕ ---
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_handler(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -242,36 +241,7 @@ async def check_sub_handler(callback: types.CallbackQuery):
     else:
         await callback.answer(TEXTS[lang]["sub_fail_alert"], show_alert=True)
 
-# --- ПЛАТЕЖИ ---
-async def create_crypto_invoice(user_id, plan_key):
-    plan = PLANS[plan_key]
-    url = "https://pay.crypt.bot/api/createInvoice"
-    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
-    payload = {
-        "asset": "USDT",
-        "amount": str(plan["price_usd"]),
-        "description": f"Subscription {plan['name']} - Beatmaker SEO Bot",
-        "payload": f"{user_id}:{plan_key}"
-    }
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            data = await resp.json()
-            if data.get("ok"):
-                return data["result"]["bot_invoice_url"], data["result"]["invoice_id"]
-            return None, None
-
-async def check_crypto_invoice(invoice_id):
-    url = "https://pay.crypt.bot/api/getInvoices"
-    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
-    payload = {"invoice_ids": [invoice_id]}
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            data = await resp.json()
-            if data.get("ok") and len(data["result"]["items"]) > 0:
-                item = data["result"]["items"][0]
-                return item["status"] == "paid", item.get("payload")
-            return False, None
-
+# --- ПЛАТЕЖИ: МЕНЮ ВЫБОРА ---
 @dp.callback_query(F.data == "buy_subscription")
 async def show_plans_menu(callback: types.CallbackQuery):
     u = get_user(callback.from_user.id)
@@ -306,31 +276,63 @@ async def show_methods_menu(callback: types.CallbackQuery):
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     await callback.answer()
 
+# --- ПЛАТЕЖИ: ЮKASSA (СБП / КАРТА С ФИСКАЛИЗАЦИЕЙ 54-ФЗ) ---
 @dp.callback_query(F.data.startswith("pay_sbp_"))
 async def pay_sbp_handler(callback: types.CallbackQuery):
     plan_key = callback.data.split("_")[2]
     plan = PLANS[plan_key]
 
     if not PROVIDER_TOKEN_YUKASSA:
-        await callback.answer("⚠️ ЮKassa еще не активирована в BotFather.", show_alert=True)
+        await callback.answer("⚠️ ЮKassa еще не активирована.", show_alert=True)
         return
 
     prices = [LabeledPrice(label=f"Подписка {plan['name']}", amount=plan["price_rub"] * 100)]
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"Подписка на {plan['name']}",
-        description=f"Неограниченный доступ к AI SEO генератору на {plan['days']} дней.",
-        provider_token=PROVIDER_TOKEN_YUKASSA,
-        currency="RUB",
-        prices=prices,
-        start_parameter=f"sub_{plan_key}",
-        payload=f"{callback.from_user.id}:{plan_key}"
-    )
+    
+    # Фискальный чек для ЮKassa
+    receipt_data = {
+        "receipt": {
+            "items": [
+                {
+                    "description": f"Подписка {plan['name']} (доступ к сервису)",
+                    "quantity": "1.00",
+                    "amount": {
+                        "value": f"{plan['price_rub']}.00",
+                        "currency": "RUB"
+                    },
+                    "vat_code": 1,
+                    "payment_mode": "full_prepayment",
+                    "payment_subject": "service"
+                }
+            ]
+        }
+    }
+
+    try:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"Подписка на {plan['name']}",
+            description=f"Неограниченный доступ к AI SEO генератору на {plan['days']} дней.",
+            provider_token=PROVIDER_TOKEN_YUKASSA,
+            currency="RUB",
+            prices=prices,
+            start_parameter=f"sub_{plan_key}",
+            payload=f"{callback.from_user.id}:{plan_key}",
+            need_email=True,
+            send_email_to_provider=True,
+            provider_data=json.dumps(receipt_data)
+        )
+    except Exception as e:
+        logging.error(f"Error sending YooKassa invoice: {e}")
+        await callback.message.answer(f"⚠️ Ошибка создания счёта: {e}")
     await callback.answer()
 
 @dp.pre_checkout_query()
 async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+    try:
+        await pre_checkout_query.answer(ok=True)
+    except Exception as e:
+        logging.error(f"Error answering pre_checkout_query: {e}")
+        await pre_checkout_query.answer(ok=False, error_message="Ошибка при подтверждении. Попробуйте еще раз.")
 
 @dp.message(F.successful_payment)
 async def successful_payment_handler(message: types.Message):
@@ -339,6 +341,36 @@ async def successful_payment_handler(message: types.Message):
     until_str = add_subscription_days(int(user_id), plan["days"])
     u = get_user(int(user_id))
     await message.answer(TEXTS[u["lang"]]["pay_success"].format(until=until_str), parse_mode="Markdown")
+
+# --- ПЛАТЕЖИ: CRYPTOBOT ---
+async def create_crypto_invoice(user_id, plan_key):
+    plan = PLANS[plan_key]
+    url = "https://pay.crypt.bot/api/createInvoice"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    payload = {
+        "asset": "USDT",
+        "amount": str(plan["price_usd"]),
+        "description": f"Subscription {plan['name']} - Beatmaker SEO Bot",
+        "payload": f"{user_id}:{plan_key}"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if data.get("ok"):
+                return data["result"]["bot_invoice_url"], data["result"]["invoice_id"]
+            return None, None
+
+async def check_crypto_invoice(invoice_id):
+    url = "https://pay.crypt.bot/api/getInvoices"
+    headers = {"Crypto-Pay-API-Token": CRYPTO_PAY_TOKEN}
+    payload = {"invoice_ids": [invoice_id]}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload, headers=headers) as resp:
+            data = await resp.json()
+            if data.get("ok") and len(data["result"]["items"]) > 0:
+                item = data["result"]["items"][0]
+                return item["status"] == "paid", item.get("payload")
+            return False, None
 
 @dp.callback_query(F.data.startswith("pay_crypto_"))
 async def pay_crypto_handler(callback: types.CallbackQuery):
@@ -370,14 +402,13 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO (ШАГИ ПРОВЕРКИ) ---
+# --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     u = get_user(user_id)
     lang = u["lang"]
 
-    # 1. Сначала проверка каналов
     if not await is_subscribed_to_tg(user_id):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Telegram Channel", url=f"https://t.me/{TG_CHANNEL_USERNAME}")],
@@ -387,7 +418,6 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["sub_required"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    # 2. Проверка лимитов (если подписка не оплачена и 1 бесплатная попытка уже исчерпана)
     if not is_user_subscribed(user_id) and u["seo_used"] >= 1:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=TEXTS[lang]["buy_sub_btn"], callback_data="buy_subscription")]
@@ -395,7 +425,6 @@ async def start_seo(message: types.Message, state: FSMContext):
         await message.answer(TEXTS[lang]["limit_reached"], reply_markup=kb, parse_mode="Markdown")
         return
 
-    # 3. Допуск к вводу данных
     await state.set_state(BotStates.waiting_for_seo_input)
     await message.answer(TEXTS[lang]["ask_seo_topic"])
 
@@ -551,7 +580,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with full feature set!")
+    print("🚀 Bot launched with YooKassa 54-FZ fiscal receipt fix!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
