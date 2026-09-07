@@ -174,7 +174,7 @@ TEXTS = {
         "change_lang": "🌐 Язык / Language",
         "select_lang": "Выберите язык интерфейса:",
         "lang_changed": "✅ Язык успешно изменен на Русский!",
-        "ask_seo_topic": "✍️ Напиши название и артистов/стиль бита (например: 'Drake x Travis Scott type beat, dark trap'):",
+        "ask_seo_topic": "✍️ Напиши название и артистов/стиль бита (например: 'Drake type beat, Drake, Travis Scott'):",
         "ask_competitor_url": "🔗 Отправь название трека или ссылку конкурента для разбора:",
         "sub_required": f"⚠️ **Для использования бота нужно подписаться на наш Telegram и YouTube!**\n\n1. Подпишись на [Telegram-канал](https://t.me/{TG_CHANNEL_USERNAME})\n2. Подпишись на [YouTube-канал]({YT_CHANNEL_URL})\n3. Нажми кнопку «Проверить подписку» ниже.",
         "check_sub_btn": "✅ Проверить подписку",
@@ -196,7 +196,7 @@ TEXTS = {
         "change_lang": "🌐 Language / Язык",
         "select_lang": "Select interface language:",
         "lang_changed": "✅ Language successfully changed to English!",
-        "ask_seo_topic": "✍️ Enter the title and artists/style (e.g., 'Drake x Travis Scott type beat, dark trap'):",
+        "ask_seo_topic": "✍️ Enter the title and artists/style (e.g., 'Drake type beat, Drake, Travis Scott'):",
         "ask_competitor_url": "🔗 Send competitor video title or link for analysis:",
         "sub_required": f"⚠️ **To use the bot, please subscribe to our Telegram and YouTube!**\n\n1. Join our [Telegram Channel](https://t.me/{TG_CHANNEL_USERNAME})\n2. Subscribe to our [YouTube Channel]({YT_CHANNEL_URL})\n3. Click 'Check Subscription' below.",
         "check_sub_btn": "✅ Check Subscription",
@@ -486,7 +486,7 @@ async def check_crypto_callback(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Платеж пока не поступил. Попробуйте через пару секунд!", show_alert=True)
 
-# --- ГЕНЕРАЦИЯ SEO (ТОПОВЫЙ ПРОМПТ) ---
+# --- ГЕНЕРАЦИЯ SEO ---
 @dp.message(F.text.in_([TEXTS["RU"]["gen_seo"], TEXTS["EN"]["gen_seo"]]))
 async def start_seo(message: types.Message, state: FSMContext):
     await state.clear()
@@ -530,32 +530,26 @@ async def process_seo(message: types.Message, state: FSMContext):
     await message.answer(TEXTS[lang]["generating"])
 
     system_instruction = (
-        "You are an elite YouTube SEO generator specializing in high-ranking type beat videos for producers and beatmakers.\n"
-        "Generate a complete, ready-to-copy YouTube SEO pack STRICTLY in English based on the user's beat info.\n\n"
-        "FORMATTING RULES:\n"
-        "1. Create ONE cohesive, catchy beat title if not provided by user.\n"
-        "2. If BPM or Key are not specified, generate realistic values for the chosen genre/artist.\n"
-        "3. Output MUST follow this EXACT structure without any extra conversational text or intro:\n\n"
-        "Title:\n"
-        "[FREE] [Artist] Type Beat 2026 - '[Beat Name]' | Rap/Trap Instrumental\n\n"
+        "You are an expert YouTube SEO generator specialized for beatmakers.\n"
+        "Generate SEO text STRICTLY in English following the exact structure below.\n\n"
+        "RULES:\n"
+        "1. Create ONE consistent, catchy beat title. It must be identical in Title and the first line of Description.\n"
+        "2. Do NOT output any intro greetings, commentary, markdown headings, or links to third-party stores.\n"
+        "3. Invent realistic BPM and Key suitable for the genre if not provided.\n"
+        "4. Follow this EXACT format:\n\n"
+        "Title: [FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
         "Description:\n"
-        "#[Artist]TypeBeat #TypeBeat2026 #[Genre]TypeBeat\n\n"
-        "🛒 Purchase / Download Untagged: https://bsta.rs/yourlink\n"
-        "🌐 Website: https://yourbeatstars.com\n\n"
-        "(FREE) [Artist] Type Beat 2026 - '[Beat Name]'\n"
-        "🎹 BPM: [BPM] | Key: [Key]\n\n"
-        "Free for non-profit / non-commercial use only (SoundCloud / YouTube without monetization).\n"
-        "MUST CREDIT IN TITLE: (prod. [Your Name])\n\n"
-        "For commercial licensing, leases, or exclusive rights, please visit the store or contact:\n"
-        "📩 Email: yourbusiness@gmail.com\n"
-        "📸 Instagram: @yourproducer\n\n"
-        "------------------------------------\n"
-        "Dont forget to Like, Comment and Subscribe for more daily beats!\n\n"
-        "Tags (Copy into YouTube Studio Tags Box - comma separated, high-ranking, within 500 chars):\n"
-        "[Artist] type beat, [Artist] type beat 2026, free [Artist] type beat, [Artist] instrumental, "
-        "type beat, type beat 2026, free type beat 2026, rap beat 2026, trap instrumental, "
-        "[Genre] type beat, free type beats, hard trap beat, rap instrumental, [Related Artist] type beat, "
-        "type beat free, freestyle beat, beat instrumental"
+        "[FREE] [Artist] Type Beat 2026 - '[Beat Name]'\n\n"
+        "📸 INSTAGRAM: @yourinstagram\n\n"
+        "📩 MAIL: your@email.com\n\n"
+        "🎹 BPM: [BPM]\n"
+        "🎼 KEY: [Key]\n\n"
+        "⚠️ FREE FOR NON PROFIT USE, FOR COMMERCIAL USE PLEASE PURCHASE A LEASE. ANYONE WHO RELEASES A SONG WITHOUT A LEASE WILL BE HIT WITH COPYRIGHT.\n\n"
+        "🔥 FREE ONLY FOR SOUNDCLOUD (prod. Your Name)\n\n"
+        "🔔 Don't forget to like & subscribe for daily beats!\n\n"
+        "[15-20 relevant comma-separated SEO tags for the beat style]\n\n"
+        "Tags:\n"
+        "[Same 15-20 tags as a comma-separated list, up to 500 characters total]"
     )
 
     try:
@@ -672,7 +666,7 @@ async def main():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-    print("🚀 Bot launched with Elite SEO prompt, SBP YooKassa & PostgreSQL support!")
+    print("🚀 Bot launched with clean SEO template, SBP YooKassa & PostgreSQL support!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
